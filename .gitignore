@@ -1,0 +1,6 @@
+# Python
+__pycache__/
+*.pyc
+
+# dispatcher.py 运行时生成的建议草稿，不需要进版本控制
+dispatch_log/
