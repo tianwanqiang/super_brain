@@ -1,9 +1,12 @@
 """
 super_brain dispatcher - v1
 
-真正的调度程序：扫描 inbox.md 里 Status: pending 的留言，按 To 字段分组给对应 agent，
-加载该 agent 的 private.md 作为专属上下文，调用 DeepSeek 起草"接下来该做什么"的建议，
-写进 dispatch_log/ 里。
+真正的调度程序：从 agents.yaml 读取"合法 agent 有哪些"（统一注册表，不再靠扫描目录），
+扫描 inbox.md 里 Status: pending 的留言，按 To 字段分组给对应 agent，加载该 agent 的
+private.md 作为专属上下文，按 agents.yaml 里的元信息（type/sources/是否要求引用/是否要求
+免责声明）拼装 system prompt，调用 DeepSeek 起草"接下来该做什么"的建议，写进 dispatch_log/ 里。
+
+新增一个 agent：在 agents.yaml 里加一条记录 + 建对应的 agents/<name>/private.md，不用改代码。
 
 明确的边界（v1 只做到这里，不做更多）：
 - 不会真的去执行任何操作（不推代码、不建公众号草稿）——只起草建议，供人工或 Claude Code
@@ -23,9 +26,12 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+import yaml
+
 SUPER_BRAIN = Path(r"G:\code\super_brain")
 INBOX = SUPER_BRAIN / "inbox.md"
 AGENTS_DIR = SUPER_BRAIN / "agents"
+AGENTS_CONFIG_PATH = SUPER_BRAIN / "agents.yaml"
 DISPATCH_LOG_DIR = SUPER_BRAIN / "dispatch_log"
 
 # 复用 toutiao-agent 已经配好的 DeepSeek Key，避免重复要用户再配一份。
@@ -36,16 +42,39 @@ DEEPSEEK_CONFIG_PATH = Path(r"G:\code\toutiao-agent\config.json")
 VALID_STATUS_VALUES = {"pending", "done"}
 
 
-def known_agent_names() -> set[str]:
-    if not AGENTS_DIR.exists():
-        return {"All"}
-    return {p.name for p in AGENTS_DIR.iterdir() if p.is_dir()} | {"All"}
+def load_agent_registry() -> dict[str, dict]:
+    """从 agents.yaml 读取 agent 注册表，按 name 建索引。
+
+    这是"合法 agent 有哪些"的唯一权威来源——目录 agents/<name>/ 存在不代表已注册，
+    必须在 agents.yaml 里登记过才算数（避免有人手滑建了个目录就被当成真实 agent）。
+    """
+    if not AGENTS_CONFIG_PATH.exists():
+        print(f"错误：找不到 {AGENTS_CONFIG_PATH}，没有它就不知道有哪些合法 agent，直接退出。")
+        return {}
+    try:
+        config = yaml.safe_load(AGENTS_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    except yaml.YAMLError as exc:
+        print(f"错误：{AGENTS_CONFIG_PATH} 不是合法 YAML，解析失败：{exc}")
+        return {}
+
+    registry = {}
+    for entry in (config or {}).get("agents", []):
+        name = entry.get("name")
+        if not name:
+            print(f"警告：agents.yaml 里有一条记录没有 name 字段，已跳过：{entry}")
+            continue
+        registry[name] = entry
+    return registry
+
+
+def known_agent_names(registry: dict[str, dict]) -> set[str]:
+    return set(registry.keys()) | {"All"}
 
 
 MESSAGE_LOG_HEADING = "## 留言记录"
 
 
-def parse_pending_messages(inbox_text: str) -> list[dict]:
+def parse_pending_messages(inbox_text: str, registry: dict[str, dict]) -> list[dict]:
     """按 --- 分块解析 inbox.md 里 `## 留言记录` 标题之后的内容，只返回校验通过、且 Status: pending 的留言。
 
     硬约束（见 inbox.md 的"使用约定"）：
@@ -54,8 +83,8 @@ def parse_pending_messages(inbox_text: str) -> list[dict]:
     - 每条留言用独占一行的 `---` 分隔，Message 内容本身不能包含这样一行。
     - Message 必须单行——多行内容从第二行起会被当成格式错误丢弃并警告，不会静默吞掉。
     - Status 精确匹配小写 pending/done，其他大小写变体会被警告并跳过。
-    - To 必须是 agents\\ 下真实存在的角色目录名，或字面量 All，否则警告并跳过
-      （避免为打错字的孤儿留言白花一次 DeepSeek 调用）。
+    - To 必须是 agents.yaml 里登记过的 agent name，或字面量 All，否则警告并跳过
+      （避免为打错字/未注册的孤儿留言白花一次 DeepSeek 调用）。
     """
     if MESSAGE_LOG_HEADING in inbox_text:
         inbox_text = inbox_text.split(MESSAGE_LOG_HEADING, 1)[1]
@@ -65,7 +94,7 @@ def parse_pending_messages(inbox_text: str) -> list[dict]:
         return []
 
     entries = []
-    valid_agents = known_agent_names()
+    valid_agents = known_agent_names(registry)
     for raw_block in inbox_text.split("\n---\n"):
         block = raw_block.strip()
         if "From:" not in block or "To:" not in block:
@@ -104,11 +133,48 @@ def parse_pending_messages(inbox_text: str) -> list[dict]:
     return entries
 
 
-def load_private_context(agent_name: str) -> str:
-    private_file = AGENTS_DIR / agent_name / "private.md"
+def load_private_context(agent_name: str, registry: dict[str, dict]) -> str:
+    entry = registry.get(agent_name)
+    knowledge_path = entry.get("knowledge_path") if entry else None
+    if not knowledge_path:
+        return "(agents.yaml 里没有为这个 agent 登记 knowledge_path，没有专属上下文)"
+    private_file = SUPER_BRAIN / knowledge_path
     if private_file.exists():
         return private_file.read_text(encoding="utf-8-sig")
-    return "(这个 agent 还没有 private.md，没有专属上下文)"
+    return f"(agents.yaml 里登记的 knowledge_path 指向 {private_file}，但文件不存在)"
+
+
+def build_system_prompt(agent_name: str, registry: dict[str, dict], private_context: str) -> str:
+    """按 agents.yaml 里的元信息（type/sources/output_requires_citation/disclaimer_required）
+    拼装 system prompt，而不是每种 agent 手写一份——这是"统一格式"真正发挥作用的地方。
+    """
+    entry = registry.get(agent_name, {})
+    agent_type = entry.get("type", "unknown")
+    description = entry.get("description", "")
+
+    parts = [
+        f"你是 super_brain 多 agent 协作体系里名叫 '{agent_name}' 的角色（类型：{agent_type}）。",
+        f"角色定位：{description}" if description else "",
+        f"下面是你的专属上下文（private.md 原文）：\n\n{private_context}",
+    ]
+
+    if agent_type == "roundtable":
+        sources = entry.get("sources") or []
+        if sources:
+            parts.append("你的知识框架来源（可审计，回答时可以引用）：\n" + "\n".join(f"- {s}" for s in sources))
+        if entry.get("output_requires_citation"):
+            parts.append("硬性要求：每条结论必须标注依据私有上下文里的第几条规则，"
+                          "覆盖不到的问题要明说'现有框架未覆盖，以下是推测'。")
+        if entry.get("disclaimer_required"):
+            parts.append("硬性要求：任何具体、可执行的建议之后，必须附一句提醒——"
+                          "这不是正式专业意见，具体问题建议咨询相应领域的执业人士确认。")
+
+    parts.append(
+        "现在收到了若干条待处理留言。请判断接下来该做什么，给出简短、具体的行动建议。"
+        "注意：你只是在起草建议，不是真的在执行——不要假装已经做了什么，"
+        "输出格式：先一句话总结判断，再列出具体建议步骤。"
+    )
+    return "\n\n".join(p for p in parts if p)
 
 
 def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
@@ -143,11 +209,15 @@ def main():
     if dry_run:
         print("=== --dry-run 模式：只解析+校验+打印，不会真的调用 DeepSeek ===\n")
 
+    registry = load_agent_registry()
+    if not registry:
+        return
+
     if not INBOX.exists():
         print(f"找不到 {INBOX}，没什么可调度的。")
         return
 
-    pending = parse_pending_messages(INBOX.read_text(encoding="utf-8-sig"))
+    pending = parse_pending_messages(INBOX.read_text(encoding="utf-8-sig"), registry)
     if not pending:
         print("inbox 里没有校验通过的 pending 留言，没什么可调度的。")
         return
@@ -168,18 +238,12 @@ def main():
 
     for agent, messages in by_agent.items():
         print(f"[{agent}] {len(messages)} 条待处理留言{'（dry-run，不会真的调用）' if dry_run else '，起草建议中...'}")
-        private_context = load_private_context(agent)
+        private_context = load_private_context(agent, registry)
         messages_text = "\n".join(
             f"- ({m.get('from', '?')} @ {m.get('time', '?')}) {m.get('message', '')}"
             for m in messages
         )
-        system_prompt = (
-            f"你是 super_brain 多 agent 协作体系里名叫 '{agent}' 的角色。"
-            f"下面是你的专属上下文（private.md 原文）：\n\n{private_context}\n\n"
-            "现在收到了若干条待处理留言。请判断接下来该做什么，给出简短、具体的行动建议。"
-            "注意：你只是在起草建议，不是真的在执行——不要假装已经做了什么，"
-            "输出格式：先一句话总结判断，再列出具体建议步骤。"
-        )
+        system_prompt = build_system_prompt(agent, registry, private_context)
 
         if dry_run:
             print("  --- 将会发送的 system prompt ---")

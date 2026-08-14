@@ -1,0 +1,69 @@
+# super_brain agent 注册表——统一格式，所有 agent 的元信息集中在这里
+#
+# dispatcher.py 靠这个文件枚举"合法的 agent 有哪些"（inbox.md 的 To 字段校验依据这里，
+# 不再靠扫描 agents/ 目录下有哪些文件夹——目录存在不代表已经正式注册）。
+# 以后手动编排圆桌讨论（比如临时用 Agent 工具唤起专家）时，也应该从这里读 sources/
+# output_requires_citation 这些字段去拼 prompt，不要每次手写。
+#
+# 字段说明：
+#   name                     agent 标识，必须和 agents/<name>/ 目录名一致
+#   type                     execution（专精执行，如 ship）/ coordinator（协调型）/
+#                            roundtable（A 类决策圆桌专家）/ coach（B 类能力建设型，暂无实例）
+#   description              一句话说明这个 agent 是干什么的，供选择界面/触发逻辑用
+#   knowledge_path           private.md 的相对路径（相对本文件所在目录）
+#   sources                  仅 roundtable 类型需要——知识框架的来源书籍/理论体系，用于可审计
+#   output_requires_citation 仅 roundtable 类型需要——是否要求每条结论标注依据第几条规则
+#   disclaimer_required      仅涉及专业资质敏感领域（如法律）需要——是否强制要求免责措辞
+
+version: 1
+
+agents:
+  - name: ship
+    type: execution
+    description: 推代码到 GitHub（git 任务）+ 生成公众号文章草稿（wechat 任务），不涉及自动发布/群发
+    knowledge_path: agents/ship/private.md
+
+  - name: coordinator
+    type: coordinator
+    description: 架构设计、任务拆解、调度专精 agent，对应用户主力沟通的这条对话线
+    knowledge_path: agents/coordinator/private.md
+
+  - name: strategy
+    type: roundtable
+    description: 战略与博弈分析——服务定价、竞争应对、谈判、市场进入时机这类决策
+    knowledge_path: agents/strategy/private.md
+    sources:
+      - "Avinash Dixit & Barry Nalebuff《策略思维》Thinking Strategically"
+      - "Michael Porter《竞争战略》Competitive Strategy"
+      - "《孙子兵法》原典 + 宫玉振《善战者说》"
+    output_requires_citation: true
+
+  - name: finance
+    type: roundtable
+    description: 财务与单位经济学——服务定价、成本结构、现金流、投入取舍这类决策
+    knowledge_path: agents/finance/private.md
+    sources:
+      - "硅谷创业/精益创业方法论体系（CAC/LTV 单位经济学框架）"
+      - "财务报表三表联动分析法（资产负债表/利润表/现金流量表）"
+      - "薛兆丰《经济学讲义》"
+    output_requires_citation: true
+
+  - name: marketing
+    type: roundtable
+    description: 营销策略与传播心理——只产出"该往哪个方向讲"的策略判断，不负责执行/发布
+    knowledge_path: agents/marketing/private.md
+    sources:
+      - "Al Ries & Jack Trout《定位》Positioning、《商战》Marketing Warfare"
+      - "Jonah Berger《疯传》/ 格拉德威尔《引爆点》"
+      - "Daniel Kahneman《思考，快与慢》Thinking, Fast and Slow"
+    output_requires_citation: true
+
+  - name: legal
+    type: roundtable
+    description: 法律与合规风险识别——只做风险提示，不做正式法律结论
+    knowledge_path: agents/legal/private.md
+    sources:
+      - "中国《公司法》一人有限责任公司相关条款"
+      - "一人公司常见合规风险公开案例整理（非执业律师意见）"
+    output_requires_citation: true
+    disclaimer_required: true
