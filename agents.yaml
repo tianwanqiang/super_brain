@@ -67,3 +67,8 @@ agents:
       - "一人公司常见合规风险公开案例整理（非执业律师意见）"
     output_requires_citation: true
     disclaimer_required: true
+
+  - name: ops-assistant
+    type: execution
+    description: 读取当天的 opc 内容，分发到头条和公众号生成待审阅草稿；默认两个平台都发，不自动发布/群发
+    knowledge_path: agents/ops-assistant/private.md
