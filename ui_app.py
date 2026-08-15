@@ -1,9 +1,14 @@
 """
-super_brain 控制台 - 最小可用 UI
+super_brain 控制台
 
-目的：之前"新建 inbox 留言、跑 dispatcher、看结果"这条业务流程，全靠手动编辑 inbox.md +
-敲命令行——这个 UI 把这条流程摆到网页上，一是方便用，二是拿它来真实走一遍完整流程，
-看哪里不通顺。
+主界面 = 圆桌讨论聊天窗口（GPT 类对话窗口的形态）：勾专家、提问题、看 Round 1/Round 2/
+会议纪要，就是这个产品的核心业务，不是一堆功能入口里的一项。
+
+inbox/dispatcher/自动化通道这些"助手·执行工具"相关的运维操作，全部挪到 /admin 二级页面——
+它们是配角，不该占主界面的版面。
+
+调用机制：圆桌讨论全程走 roundtable.py 的纯 Python 实现（urllib 直连 DeepSeek API + 线程池
+并行），不经过 Claude Code 的 Agent 工具，UI 进程本身就是唤起圆桌的主体。
 
 不是给外部客户用的产品界面，是本机调试/操作工具，默认只监听 127.0.0.1。
 
@@ -14,12 +19,13 @@ super_brain 控制台 - 最小可用 UI
 import json
 import logging
 import re
+import secrets
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, redirect, render_template, request, url_for
+from flask import Flask, redirect, render_template, request, session, url_for
 
 import dispatcher
 import publishers
@@ -30,6 +36,7 @@ configure_logging()
 logger = logging.getLogger("super_brain.ui")
 
 app = Flask(__name__)
+app.secret_key = secrets.token_hex(16)  # 仅本机单进程用，重启就换，不需要跨进程持久
 
 SUPER_BRAIN = Path(r"G:\code\super_brain")
 INBOX = SUPER_BRAIN / "inbox.md"
@@ -40,20 +47,19 @@ CONFIG_PATH = SUPER_BRAIN / "config.json"
 
 def categorize_agents(registry: dict[str, dict]) -> tuple[list, list, list]:
     """跟 2026-08-15 定的原则对齐：不是简单按 type 分组，是按"该怎么被唤起"分组。
-    - roundtable：核心圆桌决策，只能在对话里 @ 唤起，inbox/UI 都做不到
-    - assistant：有 executor，走 inbox+dispatcher 是真实执行，但 @ 唤起同样有效、且是推荐方式
-    - conversation：其余（ship/coordinator/writer 这类）——没有 executor，只能对话内 @ 唤起，
-      放进 inbox 下拉框只会拿到没什么用的 v1 单次建议，不该出现在"自动化通道"里
+    - roundtable：核心圆桌决策，主界面的聊天窗口就是它的真实调用入口（Python 直连，非 inbox）
+    - assistant：有 executor，走 inbox+dispatcher 是真实执行，是 admin 页的自动化通道
+    - conversation：其余（ship/coordinator/writer 这类）——没有 executor，只能对话内 @ 唤起
     """
-    roundtable, conversation, assistant = [], [], []
+    roundtable_agents, conversation, assistant = [], [], []
     for entry in sorted(registry.values(), key=lambda a: a.get("name", "")):
         if entry.get("type") == "roundtable":
-            roundtable.append(entry)
+            roundtable_agents.append(entry)
         elif entry.get("executor"):
             assistant.append(entry)
         else:
             conversation.append(entry)
-    return roundtable, conversation, assistant
+    return roundtable_agents, conversation, assistant
 
 
 def load_config_safe() -> dict:
@@ -126,7 +132,25 @@ def run_dispatcher(dry_run: bool) -> str:
     return output
 
 
-def render_index(**extra):
+def render_chat(**extra):
+    """主界面：圆桌讨论聊天窗口。"""
+    registry = dispatcher.load_agent_registry()
+    roundtable_agents, _, _ = categorize_agents(registry)
+    config = load_config_safe()
+    error = session.pop("roundtable_error", None)
+
+    return render_template(
+        "index.html",
+        roundtable_agents=roundtable_agents,
+        history=roundtable.load_roundtable_history(),
+        meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
+        roundtable_error=error,
+        **extra,
+    )
+
+
+def render_admin(**extra):
+    """二级页面：inbox / dispatcher / 自动化通道这些运维操作，不是主界面。"""
     registry = dispatcher.load_agent_registry()
     roundtable_agents, conversation_agents, assistant_agents = categorize_agents(registry)
     messages = parse_all_messages_for_display()
@@ -140,7 +164,7 @@ def render_index(**extra):
         ) if LOG_FILE.exists() else ""
 
     return render_template(
-        "index.html",
+        "admin.html",
         roundtable_agents=roundtable_agents,
         conversation_agents=conversation_agents,
         assistant_agents=assistant_agents,
@@ -154,7 +178,41 @@ def render_index(**extra):
 
 @app.route("/")
 def index():
-    return render_index()
+    return render_chat()
+
+
+@app.route("/roundtable/run", methods=["POST"])
+def roundtable_run():
+    """圆桌讨论的真实调用入口——直接调 roundtable.run_roundtable()（纯 Python，线程池并行
+    唤起多个 agent，直连 DeepSeek API），不经过 inbox，不经过 dispatcher.py，也不经过
+    Claude Code 的 Agent 工具。这是会花 DeepSeek 额度的真实调用，不是预览。
+    """
+    agent_names = request.form.getlist("agents")
+    question = request.form.get("question", "").strip()
+
+    if len(agent_names) < 2 or not question:
+        logger.warning(
+            f"UI：圆桌讨论表单校验失败（至少选 2 位专家 + 填问题），agents={agent_names}, question={question!r}"
+        )
+        session["roundtable_error"] = "至少选 2 位专家，并填写讨论的问题。"
+        return redirect(url_for("index"))
+
+    logger.info(f"UI：触发圆桌讨论 -> question={question!r}, agents={agent_names}")
+    try:
+        roundtable.run_roundtable(agent_names, question)
+    except roundtable.RoundtableError as exc:
+        logger.warning(f"UI：圆桌讨论参数错误：{exc}")
+        session["roundtable_error"] = str(exc)
+    except Exception:
+        logger.exception("UI：圆桌讨论执行失败")
+        session["roundtable_error"] = "圆桌讨论执行失败，详情看 logs/super_brain.log"
+
+    return redirect(url_for("index"))
+
+
+@app.route("/admin")
+def admin():
+    return render_admin()
 
 
 @app.route("/inbox/new", methods=["POST"])
@@ -164,7 +222,7 @@ def inbox_new():
 
     if not to or not message:
         logger.warning(f"UI：新建留言表单缺字段（to={to!r}, message={message!r}），已拒绝")
-        return redirect(url_for("index"))
+        return redirect(url_for("admin"))
 
     # 单行硬约束——UI 层就该挡住，不要指望 dispatcher 兜底
     if "\n" in message or "\r" in message:
@@ -172,41 +230,14 @@ def inbox_new():
         logger.warning("UI：留言内容包含换行，已自动压成单行（inbox.md 的硬约束：Message 必须单行）")
 
     append_inbox_message(to, message)
-    return redirect(url_for("index"))
+    return redirect(url_for("admin"))
 
 
 @app.route("/dispatcher/run", methods=["POST"])
 def dispatcher_run():
     dry_run = request.form.get("mode") == "dry-run"
     output = run_dispatcher(dry_run)
-    return render_index(recent_log=output, just_ran=True, dry_run=dry_run)
-
-
-@app.route("/roundtable/run", methods=["POST"])
-def roundtable_run():
-    """真实触发圆桌讨论——直接调 roundtable.run_roundtable()（Python 后台并行唤起多个 agent），
-    不经过 inbox，不经过 dispatcher.py。这是会花 DeepSeek 额度的真实调用，不是预览。
-    """
-    agent_names = request.form.getlist("agents")
-    question = request.form.get("question", "").strip()
-
-    if len(agent_names) < 2 or not question:
-        logger.warning(
-            f"UI：圆桌讨论表单校验失败（至少选 2 位专家 + 填问题），agents={agent_names}, question={question!r}"
-        )
-        return render_index(roundtable_error="至少选 2 位专家，并填写讨论的问题。")
-
-    logger.info(f"UI：触发圆桌讨论 -> question={question!r}, agents={agent_names}")
-    try:
-        result = roundtable.run_roundtable(agent_names, question)
-    except roundtable.RoundtableError as exc:
-        logger.warning(f"UI：圆桌讨论参数错误：{exc}")
-        return render_index(roundtable_error=str(exc))
-    except Exception:
-        logger.exception("UI：圆桌讨论执行失败")
-        return render_index(roundtable_error="圆桌讨论执行失败，详情看 logs/super_brain.log")
-
-    return render_index(roundtable_result=result)
+    return render_admin(recent_log=output, just_ran=True, dry_run=dry_run)
 
 
 @app.route("/config/set", methods=["POST"])
@@ -214,14 +245,14 @@ def config_set():
     value = request.form.get("meeting_minutes_dir", "").strip()
     if not value:
         logger.warning("UI：会议纪要目录表单提交了空值，已忽略")
-        return redirect(url_for("index"))
+        return redirect(request.referrer or url_for("index"))
 
     config = load_config_safe()
     config["MEETING_MINUTES_DIR"] = value
     CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：MEETING_MINUTES_DIR 已设置为 {value}（首次配置，之后不再需要重复问）")
-    return redirect(url_for("index"))
+    return redirect(request.referrer or url_for("index"))
 
 
 if __name__ == "__main__":

@@ -10,3 +10,6 @@ dispatch_log/
 
 # 运行日志
 logs/
+
+# 圆桌讨论原始记录（question/round1/round2 的 JSON 落地，供 UI 聊天窗口重建历史用）
+roundtable_log/

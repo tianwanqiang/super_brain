@@ -2,167 +2,193 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>super_brain 控制台</title>
+<title>决策圆桌 · super_brain</title>
 <style>
-  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1000px; margin: 30px auto; padding: 0 20px; color: #1b2028; background: #f5f6f8; }
-  h1 { font-size: 22px; }
-  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 36px; }
-  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13.5px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
-  th { background: #eef0f3; font-weight: 600; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; }
-  .pill-pending { background: #fdecd2; color: #a35b00; }
-  .pill-done { background: #dcefe0; color: #1e7a3c; }
-  .pill-executor { background: #e0f0ef; color: #0e6e76; }
-  .pill-roundtable { background: #ece1f7; color: #6b3fa0; }
-  form.inline { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; }
-  select, input[type=text], textarea { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13.5px; font-family: inherit; }
-  input[type=text] { flex: 1; min-width: 240px; }
-  button { padding: 7px 16px; border: none; border-radius: 4px; background: #0e6e76; color: #fff; font-size: 13.5px; cursor: pointer; }
-  button.secondary { background: #6b6357; }
-  pre { background: #171b24; color: #cfd6e0; padding: 14px; border-radius: 6px; font-size: 12px; overflow-x: auto; max-height: 420px; white-space: pre-wrap; }
-  .banner { background: #dcefe0; border: 1px solid #1e7a3c; color: #1e5c2f; padding: 10px 14px; border-radius: 6px; margin: 14px 0; font-size: 13.5px; }
-  .stat { color: #a35b00; font-weight: 700; }
+  :root {
+    --bg: #f5f6f8;
+    --surface: #fff;
+    --text: #1b2028;
+    --muted: #6b7280;
+    --border: #e5e5e5;
+    --accent: #0e6e76;
+    --warn-bg: #fdecd2;
+    --warn-border: #a35b00;
+    --warn-text: #7a4400;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--border);
+    flex: 0 0 auto;
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  header h1 span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  header a { color: var(--muted); font-size: 12.5px; text-decoration: none; }
+  header a:hover { color: var(--accent); text-decoration: underline; }
+
+  .banner {
+    margin: 10px 24px 0; padding: 10px 14px; border-radius: 6px; font-size: 13px;
+  }
+  .banner-warn { background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text); }
+  .banner-warn form { display: inline-flex; gap: 6px; margin-top: 8px; }
+  .banner-warn input[type=text] { padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; min-width: 260px; }
+  .banner-warn button { padding: 5px 12px; border: none; border-radius: 4px; background: var(--warn-border); color: #fff; cursor: pointer; font-size: 12.5px; }
+  .banner-error { background: #fbe3e0; border: 1px solid #b3402f; color: #8a2e20; }
+
+  main.chat {
+    flex: 1 1 auto; overflow-y: auto; padding: 20px 24px 8px;
+    display: flex; flex-direction: column; gap: 26px;
+  }
+  .empty-state { margin: auto; text-align: center; color: var(--muted); max-width: 480px; }
+  .empty-state h2 { font-size: 16px; color: var(--text); margin-bottom: 6px; }
+  .empty-state p { font-size: 13.5px; line-height: 1.6; }
+
+  .turn { display: flex; flex-direction: column; gap: 10px; }
+  .turn-meta { font-size: 11.5px; color: var(--muted); }
+
+  .bubble-user {
+    align-self: flex-end; max-width: 72%; background: var(--text); color: #fff;
+    padding: 10px 14px; border-radius: 12px 12px 2px 12px; font-size: 14px; line-height: 1.5;
+  }
+
+  .round-label {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted);
+    margin-top: 4px;
+  }
+  .agent-row { display: flex; flex-direction: column; gap: 8px; }
+  .bubble-agent {
+    max-width: 78%; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--agent-color, var(--accent));
+    padding: 10px 14px; border-radius: 2px 12px 12px 12px; font-size: 13.5px; line-height: 1.6; white-space: pre-wrap;
+  }
+  .bubble-agent .agent-name { font-weight: 700; font-size: 12.5px; color: var(--agent-color, var(--accent)); margin-bottom: 4px; display: block; }
+
+  .bubble-synthesis {
+    align-self: stretch; background: #eaf5ec; border: 1px solid #1e7a3c; color: #1e5c2f;
+    padding: 12px 16px; border-radius: 10px; font-size: 13.5px; line-height: 1.6;
+  }
+  .bubble-synthesis a { color: #1e5c2f; font-weight: 600; }
+  .bubble-synthesis.skip { background: #f1eee7; border-color: #8a7f68; color: #5c5340; }
+
+  form.composer {
+    flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--surface);
+    padding: 12px 24px 16px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .expert-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .expert-chips label {
+    font-size: 12.5px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border);
+    cursor: pointer; user-select: none; color: var(--muted); background: var(--bg);
+  }
+  .expert-chips input { display: none; }
+  .expert-chips input:checked + span { color: #fff; }
+  .expert-chips label:has(input:checked) { color: #fff; border-color: transparent; }
+  .expert-chips label[data-agent="strategy"]:has(input:checked) { background: #6b3fa0; }
+  .expert-chips label[data-agent="finance"]:has(input:checked) { background: #0e6e76; }
+  .expert-chips label[data-agent="marketing"]:has(input:checked) { background: #a35b00; }
+  .expert-chips label[data-agent="legal"]:has(input:checked) { background: #3f5b7a; }
+
+  .composer-row { display: flex; gap: 8px; align-items: flex-end; }
+  .composer-row textarea {
+    flex: 1; resize: none; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px;
+    font-size: 14px; font-family: inherit; line-height: 1.4; min-height: 44px; max-height: 140px;
+  }
+  .composer-row button {
+    padding: 10px 20px; border: none; border-radius: 8px; background: var(--accent); color: #fff;
+    font-size: 13.5px; cursor: pointer; flex: 0 0 auto;
+  }
+  .composer-hint { font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
 
-<h1>super_brain 控制台</h1>
-<p>本机调试/观测用的 UI，不是主入口——<strong>真正的主入口是在 Claude Code 对话里 <code>@agent 名字</code></strong>，
-这个页面只负责两件事：给"助手类"agent 一条不经过对话也能触发的自动化通道，以及展示当前状态。</p>
+{% set agent_colors = {'strategy': '#6b3fa0', 'finance': '#0e6e76', 'marketing': '#a35b00', 'legal': '#3f5b7a'} %}
 
-{% if just_ran %}
-<div class="banner">已运行 dispatcher.py（{{ "dry-run" if dry_run else "真实执行" }}），输出见下方日志区。</div>
+<header>
+  <h1>决策圆桌 <span>super_brain 主界面 · Python 直连 DeepSeek，非 Claude Code 唤起</span></h1>
+  <a href="{{ url_for('admin') }}">运维（inbox / 发布通道）→</a>
+</header>
+
+{% if not meeting_minutes_dir %}
+<div class="banner banner-warn">
+  还没设置会议纪要存放目录——圆桌讨论仍会正常进行，但正式纪要文档不会落盘。设一次就够了：
+  <form method="post" action="{{ url_for('config_set') }}">
+    <input type="text" name="meeting_minutes_dir" placeholder="例如 G:\code\meeting-minutes" required>
+    <button type="submit">保存</button>
+  </form>
+</div>
 {% endif %}
 
-<h2>@ 唤起（主入口，不在这个页面上操作）</h2>
-<table>
-  <tr><th>@名字</th><th>定位</th><th>怎么用</th></tr>
-  {% for a in roundtable_agents %}
-  <tr>
-    <td><code>@{{ a.name }}</code> <span class="pill pill-roundtable">核心·圆桌决策</span></td>
-    <td>{{ a.description }}</td>
-    <td>在 Claude Code 对话里说"召开圆桌讨论"，或者用下面"召开圆桌讨论"这个真实表单——
-      两条路径都是真的并行独立分析，不是单次建议</td>
-  </tr>
-  {% endfor %}
-  {% for a in conversation_agents %}
-  <tr>
-    <td><code>@{{ a.name }}</code> <span class="pill" style="background:#e8e5df; color:#57503f;">对话内角色</span></td>
-    <td>{{ a.description }}</td>
-    <td>对话里直接说"@{{ a.name }} 帮我……"，靠当前会话的真实工具权限执行，不经过 inbox</td>
-  </tr>
-  {% endfor %}
-  {% for a in assistant_agents %}
-  <tr>
-    <td><code>@{{ a.name }}</code> <span class="pill pill-executor">助手·执行工具</span></td>
-    <td>{{ a.description }}</td>
-    <td>对话里说"@{{ a.name }} 处理一下"（推荐），或者用下面的自动化通道（免打开对话，适合批处理/测试）</td>
-  </tr>
-  {% endfor %}
-</table>
-
-<h2>召开圆桌讨论（真实执行，Python 后台并行唤起，不经过 inbox）</h2>
-<p style="font-size:12.5px; color:#888;">
-  直接调 <code>roundtable.py</code>：勾选的专家真的并行独立分析（Round 1 互相看不见），
-  再互相交叉校验（Round 2），最后由 <code>writer</code> 写成正式会议纪要落盘到下面配置的目录。
-  这是会消耗 DeepSeek 额度的真实调用，不是预览。
-</p>
 {% if roundtable_error %}
-<div class="banner" style="background:#fdecd2; border-color:#a35b00; color:#7a4400;">{{ roundtable_error }}</div>
+<div class="banner banner-error">{{ roundtable_error }}</div>
 {% endif %}
-<form class="inline" method="post" action="{{ url_for('roundtable_run') }}" style="flex-direction: column; align-items: stretch;">
-  <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:6px;">
+
+<main class="chat" id="chat">
+  {% if not history %}
+  <div class="empty-state">
+    <h2>还没有讨论记录</h2>
+    <p>在下面勾选 2 位以上专家，输入要决策的问题，圆桌讨论就会真的并行独立分析、交叉校验，
+    最后写成正式会议纪要——全程 Python 直连 DeepSeek API，不依赖 Claude Code 对话。</p>
+  </div>
+  {% endif %}
+  {% for turn in history %}
+  <div class="turn">
+    <div class="bubble-user">{{ turn.question }}</div>
+    <div class="turn-meta">{{ turn.timestamp }} · 参与专家：{{ turn.agents | join('、') }}</div>
+
+    <div class="round-label">Round 1 · 独立分析（互相看不见）</div>
+    <div class="agent-row">
+      {% for name, text in turn.round1.items() %}
+      <div class="bubble-agent" style="--agent-color: {{ agent_colors.get(name, '#0e6e76') }}">
+        <span class="agent-name">{{ name }}</span>{{ text }}
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="round-label">Round 2 · 交叉校验</div>
+    <div class="agent-row">
+      {% for name, text in turn.round2.items() %}
+      <div class="bubble-agent" style="--agent-color: {{ agent_colors.get(name, '#0e6e76') }}">
+        <span class="agent-name">{{ name }}</span>{{ text }}
+      </div>
+      {% endfor %}
+    </div>
+
+    {% if turn.minutes_path %}
+    <div class="bubble-synthesis">正式会议纪要已生成：<code>{{ turn.minutes_path }}</code></div>
+    {% else %}
+    <div class="bubble-synthesis skip">未落盘正式会议纪要（当时没配置存放目录），原始记录仍保留在上面。</div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</main>
+
+<form class="composer" method="post" action="{{ url_for('roundtable_run') }}">
+  <div class="expert-chips">
     {% for a in roundtable_agents %}
-    <label style="font-size:13.5px; display:flex; align-items:center; gap:4px;">
-      <input type="checkbox" name="agents" value="{{ a.name }}"> {{ a.name }}
+    <label data-agent="{{ a.name }}">
+      <input type="checkbox" name="agents" value="{{ a.name }}"><span>{{ a.name }} · {{ a.description[:14] }}…</span>
     </label>
     {% endfor %}
   </div>
-  <div style="display:flex; gap:8px;">
-    <input type="text" name="question" placeholder="要讨论的问题，例如：要不要把决策圆桌做成付费功能" required>
-    <button type="submit">召开圆桌（真实执行）</button>
+  <div class="composer-row">
+    <textarea name="question" placeholder="要讨论的决策问题，例如：要不要把决策圆桌做成付费功能开放给客户" required></textarea>
+    <button type="submit">召开圆桌</button>
   </div>
+  <div class="composer-hint">至少选 2 位专家 · 每次提交都是真实的 DeepSeek 调用，会消耗额度</div>
 </form>
 
-{% if roundtable_result %}
-<div class="banner">
-  圆桌讨论完成——问题：{{ roundtable_result.question }}，参与：{{ roundtable_result.agents | join('、') }}
-  {% if roundtable_result.minutes_path %}
-    ，会议纪要已落盘：<code>{{ roundtable_result.minutes_path }}</code>
-  {% else %}
-    ，未落盘（没配置会议纪要目录，见下方"首次配置"）
-  {% endif %}
-</div>
-<h2>Round 1（独立分析，互不可见）</h2>
-{% for name, text in roundtable_result.round1.items() %}
-<p><strong>{{ name }}</strong></p>
-<pre>{{ text }}</pre>
-{% endfor %}
-<h2>Round 2（交叉校验）</h2>
-{% for name, text in roundtable_result.round2.items() %}
-<p><strong>{{ name }}</strong></p>
-<pre>{{ text }}</pre>
-{% endfor %}
-{% endif %}
-
-<h2>首次配置：会议纪要存放目录</h2>
-{% if meeting_minutes_dir %}
-<p>已设置：<code>{{ meeting_minutes_dir }}</code>——<code>writer</code> 产出的会议纪要、
-<code>ops-assistant</code> 发现新素材，都读这个路径。</p>
-{% else %}
-<div class="banner" style="background:#fdecd2; border-color:#a35b00; color:#7a4400;">
-  还没设置——<code>writer</code> 写会议纪要、<code>ops-assistant</code> 找会议纪要素材，
-  现在都没有目录可用，这条流水线实际是断的。先在这里设一次，只需要设一次。
-</div>
-{% endif %}
-<form class="inline" method="post" action="{{ url_for('config_set') }}">
-  <input type="text" name="meeting_minutes_dir" placeholder="例如 G:\code\meeting-minutes" value="{{ meeting_minutes_dir or '' }}" required>
-  <button type="submit">保存到 config.json</button>
-</form>
-
-<h2>自动化通道（仅"助手·执行工具"类，走 inbox + dispatcher.py）</h2>
-<p style="font-size:12.5px; color:#888;">
-  只列出真的有 <code>executor</code>、走这条路会真实执行的 agent。<code>ship</code>/<code>coordinator</code>
-  和四个圆桌专家都不在这里——它们要么只能在对话里用，要么走 inbox 也只能拿到一段没什么用的单次建议，
-  放进来只会重新制造上次那种误解。
-</p>
-<form class="inline" method="post" action="{{ url_for('inbox_new') }}">
-  <select name="to" required>
-    {% for a in assistant_agents %}
-    <option value="{{ a.name }}">{{ a.name }}</option>
-    {% endfor %}
-  </select>
-  <input type="text" name="message" placeholder="留言内容（单行，硬约束）" required>
-  <button type="submit">追加到 inbox</button>
-</form>
-
-<h2>触发 dispatcher.py</h2>
-<form class="inline" method="post" action="{{ url_for('dispatcher_run') }}">
-  <button type="submit" name="mode" value="dry-run" class="secondary">Dry-run（零成本，先跑这个）</button>
-  <button type="submit" name="mode" value="real">真实执行（会消耗额度/产生真实草稿）</button>
-</form>
-
-<h2>Inbox 留言（{{ messages|length }}，最新在前）</h2>
-<table>
-  <tr><th>From</th><th>To</th><th>Time</th><th>Status</th><th>Message</th></tr>
-  {% for m in messages %}
-  <tr>
-    <td>{{ m.from }}</td>
-    <td><code>{{ m.to }}</code></td>
-    <td>{{ m.time }}</td>
-    <td>
-      {% if m.status == 'pending' %}<span class="pill pill-pending">pending</span>
-      {% elif m.status == 'done' %}<span class="pill pill-done">done</span>
-      {% else %}{{ m.status }}{% endif %}
-    </td>
-    <td>{{ m.message }}</td>
-  </tr>
-  {% endfor %}
-</table>
-
-<h2>最近日志（logs/super_brain.log 末尾）</h2>
-<pre>{{ recent_log or "（还没有日志）" }}</pre>
+<script>
+  var chat = document.getElementById('chat');
+  chat.scrollTop = chat.scrollHeight;
+</script>
 
 </body>
 </html>

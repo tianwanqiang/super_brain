@@ -38,6 +38,7 @@ from log_setup import configure_logging
 logger = logging.getLogger("super_brain.roundtable")
 
 CONFIG_PATH = SUPER_BRAIN / "config.json"
+ROUNDTABLE_LOG_DIR = SUPER_BRAIN / "roundtable_log"
 
 
 class RoundtableError(Exception):
@@ -154,6 +155,31 @@ def write_meeting_minutes(question: str, agent_names: list[str],
     return out_path
 
 
+def _persist_run_log(entry: dict) -> None:
+    """独立于 write_meeting_minutes 落盘的正式文档——这里存的是每一轮的原始记录（含 Round 1/2
+    全文），供 UI 聊天窗口重建历史用。会议纪要目录未配置也不影响这份记录，两者互不依赖。
+    """
+    ROUNDTABLE_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    slug = re.sub(r"[^\w一-鿿-]", "-", entry["question"])[:30].strip("-") or "untitled"
+    out_path = ROUNDTABLE_LOG_DIR / f"{now:%Y-%m-%d_%H%M%S}_{slug}.json"
+    out_path.write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(f"圆桌讨论原始记录已落盘：{out_path}")
+
+
+def load_roundtable_history() -> list[dict]:
+    """读 roundtable_log/ 下所有记录，按时间正序返回（最早的在前，符合聊天窗口从上到下的阅读顺序）。"""
+    if not ROUNDTABLE_LOG_DIR.exists():
+        return []
+    history = []
+    for path in sorted(ROUNDTABLE_LOG_DIR.glob("*.json")):
+        try:
+            history.append(json.loads(path.read_text(encoding="utf-8-sig")))
+        except (json.JSONDecodeError, OSError):
+            logger.warning(f"圆桌历史记录读取失败，跳过：{path}")
+    return history
+
+
 def run_roundtable(agent_names: list[str], question: str) -> dict:
     registry = load_agent_registry()
 
@@ -188,13 +214,16 @@ def run_roundtable(agent_names: list[str], question: str) -> dict:
     minutes_path = write_meeting_minutes(question, agent_names, round1, round2, api_key)
 
     logger.info("===== 圆桌讨论结束 =====")
-    return {
+    result = {
         "question": question,
         "agents": agent_names,
         "round1": round1,
         "round2": round2,
         "minutes_path": str(minutes_path) if minutes_path else None,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
+    _persist_run_log(result)
+    return result
 
 
 if __name__ == "__main__":

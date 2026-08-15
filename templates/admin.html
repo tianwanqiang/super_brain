@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>运维 · super_brain</title>
+<style>
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1000px; margin: 30px auto; padding: 0 20px; color: #1b2028; background: #f5f6f8; }
+  h1 { font-size: 22px; }
+  h1 a { font-size: 13px; color: #666; text-decoration: none; margin-left: 14px; }
+  h1 a:hover { color: #0e6e76; text-decoration: underline; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 36px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
+  th { background: #eef0f3; font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; }
+  .pill-pending { background: #fdecd2; color: #a35b00; }
+  .pill-done { background: #dcefe0; color: #1e7a3c; }
+  .pill-executor { background: #e0f0ef; color: #0e6e76; }
+  .pill-roundtable { background: #ece1f7; color: #6b3fa0; }
+  form.inline { display: flex; gap: 8px; margin: 14px 0; flex-wrap: wrap; }
+  select, input[type=text], textarea { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13.5px; font-family: inherit; }
+  input[type=text] { flex: 1; min-width: 240px; }
+  button { padding: 7px 16px; border: none; border-radius: 4px; background: #0e6e76; color: #fff; font-size: 13.5px; cursor: pointer; }
+  button.secondary { background: #6b6357; }
+  pre { background: #171b24; color: #cfd6e0; padding: 14px; border-radius: 6px; font-size: 12px; overflow-x: auto; max-height: 420px; white-space: pre-wrap; }
+  .banner { background: #dcefe0; border: 1px solid #1e7a3c; color: #1e5c2f; padding: 10px 14px; border-radius: 6px; margin: 14px 0; font-size: 13.5px; }
+  .stat { color: #a35b00; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<h1>super_brain 运维<a href="{{ url_for('index') }}">← 回到决策圆桌</a></h1>
+<p>这个页面是配角——发布/运营这些"助手·执行工具"的运维操作放在这里，不占主界面版面。
+圆桌讨论是核心业务，在<a href="{{ url_for('index') }}">主界面</a>用聊天窗口直接发起，不在这里操作。</p>
+
+{% if just_ran %}
+<div class="banner">已运行 dispatcher.py（{{ "dry-run" if dry_run else "真实执行" }}），输出见下方日志区。</div>
+{% endif %}
+
+<h2>@ 唤起（对话内角色，不在这个页面上操作）</h2>
+<table>
+  <tr><th>@名字</th><th>定位</th><th>怎么用</th></tr>
+  {% for a in conversation_agents %}
+  <tr>
+    <td><code>@{{ a.name }}</code> <span class="pill" style="background:#e8e5df; color:#57503f;">对话内角色</span></td>
+    <td>{{ a.description }}</td>
+    <td>对话里直接说"@{{ a.name }} 帮我……"，靠当前会话的真实工具权限执行，不经过 inbox</td>
+  </tr>
+  {% endfor %}
+  {% for a in assistant_agents %}
+  <tr>
+    <td><code>@{{ a.name }}</code> <span class="pill pill-executor">助手·执行工具</span></td>
+    <td>{{ a.description }}</td>
+    <td>对话里说"@{{ a.name }} 处理一下"（推荐），或者用下面的自动化通道（免打开对话，适合批处理/测试）</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>会议纪要存放目录</h2>
+{% if meeting_minutes_dir %}
+<p>已设置：<code>{{ meeting_minutes_dir }}</code>——圆桌讨论产出的会议纪要、
+<code>ops-assistant</code> 发现新素材，都读这个路径。</p>
+{% else %}
+<div class="banner" style="background:#fdecd2; border-color:#a35b00; color:#7a4400;">
+  还没设置——去<a href="{{ url_for('index') }}">主界面</a>顶部的提示条设一次即可。
+</div>
+{% endif %}
+<form class="inline" method="post" action="{{ url_for('config_set') }}">
+  <input type="text" name="meeting_minutes_dir" placeholder="例如 G:\code\meeting-minutes" value="{{ meeting_minutes_dir or '' }}" required>
+  <button type="submit">保存到 config.json</button>
+</form>
+
+<h2>自动化通道（仅"助手·执行工具"类，走 inbox + dispatcher.py）</h2>
+<p style="font-size:12.5px; color:#888;">
+  只列出真的有 <code>executor</code>、走这条路会真实执行的 agent。<code>ship</code>/<code>coordinator</code>
+  和四个圆桌专家都不在这里——圆桌专家的真实调用入口是主界面的聊天窗口。
+</p>
+<form class="inline" method="post" action="{{ url_for('inbox_new') }}">
+  <select name="to" required>
+    {% for a in assistant_agents %}
+    <option value="{{ a.name }}">{{ a.name }}</option>
+    {% endfor %}
+  </select>
+  <input type="text" name="message" placeholder="留言内容（单行，硬约束）" required>
+  <button type="submit">追加到 inbox</button>
+</form>
+
+<h2>触发 dispatcher.py</h2>
+<form class="inline" method="post" action="{{ url_for('dispatcher_run') }}">
+  <button type="submit" name="mode" value="dry-run" class="secondary">Dry-run（零成本，先跑这个）</button>
+  <button type="submit" name="mode" value="real">真实执行（会消耗额度/产生真实草稿）</button>
+</form>
+
+<h2>Inbox 留言（{{ messages|length }}，最新在前）</h2>
+<table>
+  <tr><th>From</th><th>To</th><th>Time</th><th>Status</th><th>Message</th></tr>
+  {% for m in messages %}
+  <tr>
+    <td>{{ m.from }}</td>
+    <td><code>{{ m.to }}</code></td>
+    <td>{{ m.time }}</td>
+    <td>
+      {% if m.status == 'pending' %}<span class="pill pill-pending">pending</span>
+      {% elif m.status == 'done' %}<span class="pill pill-done">done</span>
+      {% else %}{{ m.status }}{% endif %}
+    </td>
+    <td>{{ m.message }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<h2>最近日志（logs/super_brain.log 末尾）</h2>
+<pre>{{ recent_log or "（还没有日志）" }}</pre>
+
+</body>
+</html>
