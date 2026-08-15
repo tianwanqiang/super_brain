@@ -308,7 +308,7 @@ def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
     try:
         article = generate_toutiao_article(content, api_key)
         slug = re.sub(r"[^\w一-鿿-]", "-", path.stem)[:40].strip("-") or "untitled"
-        draft_path = publishers.TOUTIAO_DRAFTS_DIR / f"toutiao_from_minutes_{slug}.md"
+        draft_path = publishers.get_toutiao_drafts_dir() / f"toutiao_from_minutes_{slug}.md"
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         header = f"本文由 DeepSeek 根据会议纪要 {path.name} 自动生成草稿，发布前请人工审阅。\n\n---\n\n"
         draft_path.write_text(header + article, encoding="utf-8")

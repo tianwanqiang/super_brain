@@ -281,6 +281,8 @@ def render_admin(**extra):
         pending_count=pending_count,
         recent_log=recent_log,
         meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
+        toutiao_drafts_dir_configured=config.get("TOUTIAO_DRAFTS_DIR"),
+        toutiao_drafts_dir_effective=str(publishers.get_toutiao_drafts_dir()),
         **extra,
     )
 
@@ -437,6 +439,53 @@ def config_set():
     Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：MEETING_MINUTES_DIR 已设置为 {value}（首次配置，之后不再需要重复问）")
     return redirect(request.referrer or url_for("index"))
+
+
+@app.route("/config/set-toutiao-drafts-dir", methods=["POST"])
+def config_set_toutiao_drafts_dir():
+    """头条草稿存放目录——不像会议纪要目录那样是硬性必填项，没设置就用历史默认值兜底，
+    设置了就迁移过去（publishers.get_toutiao_drafts_dir() 读的是这同一个 key）。
+    """
+    value = request.form.get("toutiao_drafts_dir", "").strip()
+    if not value:
+        logger.warning("UI：头条草稿目录表单提交了空值，已忽略")
+        return redirect(request.referrer or url_for("admin"))
+
+    config = load_config_safe()
+    config["TOUTIAO_DRAFTS_DIR"] = value
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(value).mkdir(parents=True, exist_ok=True)
+    logger.info(f"UI：TOUTIAO_DRAFTS_DIR 已设置为 {value}")
+    return redirect(request.referrer or url_for("admin"))
+
+
+DRAFT_PREVIEW_EXTS = {".md", ".txt"}
+
+
+@app.route("/draft/preview")
+def draft_preview():
+    """快捷预览头条草稿——安全边界很关键：path 参数完全来自用户输入（哪怕是本机单用户工具），
+    必须校验解析后的真实路径确实落在头条草稿目录内，不然就是一个任意文件读取漏洞。
+    """
+    raw_path = request.args.get("path", "")
+    if not raw_path:
+        return "缺少 path 参数", 400
+
+    target = Path(raw_path).resolve()
+    allowed_root = publishers.get_toutiao_drafts_dir().resolve()
+    try:
+        target.relative_to(allowed_root)
+    except ValueError:
+        logger.warning(f"UI：草稿预览请求被拒绝——路径不在允许的目录内：{raw_path!r}")
+        return "只能预览头条草稿目录内的文件", 403
+
+    if target.suffix.lower() not in DRAFT_PREVIEW_EXTS:
+        return "只能预览 .md / .txt 文件", 403
+    if not target.is_file():
+        return "文件不存在（可能已被移动或删除）", 404
+
+    content = target.read_text(encoding="utf-8", errors="replace")
+    return render_template("draft_preview.html", path=str(target), content=content)
 
 
 if __name__ == "__main__":

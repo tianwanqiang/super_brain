@@ -14,6 +14,7 @@ super_brain publishers - 真实发布能力
 import json
 import logging
 import mimetypes
+import shutil
 import subprocess
 import urllib.request
 import uuid
@@ -24,7 +25,7 @@ logger = logging.getLogger("super_brain.publishers")
 SUPER_BRAIN = Path(r"G:\code\super_brain")
 CONFIG_PATH = SUPER_BRAIN / "config.json"
 TOUTIAO_SCRIPT = Path(r"G:\code\toutiao-agent\Generate-ToutiaoDraft.ps1")
-TOUTIAO_DRAFTS_DIR = Path(r"G:\code\toutiao-agent\drafts")
+TOUTIAO_DRAFTS_DIR_DEFAULT = Path(r"G:\code\toutiao-agent\drafts")
 
 
 class PublishError(Exception):
@@ -38,6 +39,22 @@ def load_config() -> dict:
             f"WECHAT_DEFAULT_COVER_URL 三个字段，参考 config.json.example（如果有）自己建一份。"
         )
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+
+
+def get_toutiao_drafts_dir() -> Path:
+    """草稿存放目录可以通过 config.json 里的 TOUTIAO_DRAFTS_DIR 迁移到别处（比如打包给客户、
+    换电脑时不用改代码）；没配置就用 toutiao-agent 项目自带的 drafts/（历史默认值，兼容老数据）。
+    跟微信凭据不同，这个不是硬性必填项，缺配置不该报错，直接兜底。
+    """
+    if CONFIG_PATH.exists():
+        try:
+            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+            value = config.get("TOUTIAO_DRAFTS_DIR")
+            if value:
+                return Path(value)
+        except (json.JSONDecodeError, OSError):
+            logger.warning("读取 config.json 里的 TOUTIAO_DRAFTS_DIR 失败，用默认目录兜底")
+    return TOUTIAO_DRAFTS_DIR_DEFAULT
 
 
 # ---------- 微信 ----------
@@ -153,9 +170,23 @@ def publish_toutiao_draft(date: str) -> Path | None:
     if result.returncode != 0:
         logger.error(f"头条脚本退出码 {result.returncode}：{result.stderr or result.stdout}")
         raise PublishError(f"头条草稿生成失败（exit {result.returncode}）：{result.stderr or result.stdout}")
-    draft_path = TOUTIAO_DRAFTS_DIR / f"toutiao_{date}.md"
+
+    # PowerShell 脚本自己写死了输出目录（toutiao-agent\drafts），不知道 super_brain 这边配置了
+    # 别的存放目录——脚本内部逻辑不动，这里只是把产出文件统一挪到用户配置的目录，让"存放目录
+    # 可配置"这件事对两条生成路径（当天 opc / 会议纪要）都是真的，而不是只对一半路径生效。
+    script_output_dir = TOUTIAO_SCRIPT.parent / "drafts"
+    draft_path = script_output_dir / f"toutiao_{date}.md"
     if not draft_path.exists():
         logger.error(f"头条脚本退出码是 0，但没找到预期的草稿文件 {draft_path}")
         raise PublishError(f"脚本退出码是 0，但没找到预期的草稿文件 {draft_path}（opc 素材确实存在，属于真实异常）")
+
+    target_dir = get_toutiao_drafts_dir()
+    if target_dir.resolve() != script_output_dir.resolve():
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target_path = target_dir / draft_path.name
+        shutil.move(str(draft_path), str(target_path))
+        logger.info(f"头条草稿已从脚本默认目录搬到配置目录：{target_path}")
+        draft_path = target_path
+
     logger.info(f"头条草稿生成成功：{draft_path}")
     return draft_path

@@ -70,6 +70,15 @@
   <button type="submit">保存到 config.json</button>
 </form>
 
+<h2>头条草稿存放目录</h2>
+<p>当前实际使用：<code>{{ toutiao_drafts_dir_effective }}</code>
+{% if not toutiao_drafts_dir_configured %}（还没手动配置过，用的是历史默认目录——想迁移到别的位置，在下面设一次就行）{% endif %}
+</p>
+<form class="inline" method="post" action="{{ url_for('config_set_toutiao_drafts_dir') }}">
+  <input type="text" name="toutiao_drafts_dir" placeholder="例如 G:\code\my-drafts" value="{{ toutiao_drafts_dir_configured or '' }}">
+  <button type="submit">保存到 config.json</button>
+</form>
+
 <h2>自动化通道（仅"助手·执行工具"类，走 inbox + dispatcher.py）</h2>
 <p style="font-size:12.5px; color:#888;">
   只列出真的有 <code>executor</code>、走这条路会真实执行的 agent。<code>ship</code>/<code>coordinator</code>

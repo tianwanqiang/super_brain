@@ -83,6 +83,12 @@
     padding: 12px 16px; border-radius: 10px; font-size: 13px; line-height: 1.7;
   }
   .bubble-draft .err { color: #8a2e20; }
+  .bubble-draft a { color: #34508a; font-weight: 600; text-decoration: none; margin-left: 4px; }
+  .bubble-draft a:hover { text-decoration: underline; }
+  .copy-path-btn {
+    margin-left: 4px; padding: 2px 8px; border: 1px solid #34508a; border-radius: 999px;
+    background: transparent; color: #34508a; font-size: 11.5px; cursor: pointer;
+  }
   .draft-form { align-self: flex-start; }
   .draft-form button {
     padding: 6px 14px; border: 1px solid #34508a; border-radius: 999px; background: transparent;
@@ -199,7 +205,11 @@
     {% elif draft %}
     <div class="bubble-draft">
       <strong>{{ agent_label('ops-assistant') }}已生成草稿</strong>（{{ draft.timestamp }}）<br>
-      {% if draft.result.toutiao %}头条草稿：<code>{{ draft.result.toutiao }}</code><br>{% endif %}
+      {% if draft.result.toutiao %}
+      头条草稿已保存至：<code class="draft-path">{{ draft.result.toutiao }}</code>
+      <a href="{{ url_for('draft_preview', path=draft.result.toutiao) }}" target="_blank">预览 →</a>
+      <button type="button" class="copy-path-btn" data-path="{{ draft.result.toutiao }}">复制路径</button><br>
+      {% endif %}
       {% if draft.result.toutiao_error %}<span class="err">头条草稿生成失败：{{ draft.result.toutiao_error }}</span><br>{% endif %}
       {% if draft.result.wechat %}公众号草稿已建好（draft_media_id: {{ draft.result.wechat.draft_media_id }}），去公众号后台"草稿箱"查看<br>{% endif %}
       {% if draft.result.wechat_error %}<span class="err">公众号草稿生成失败：{{ draft.result.wechat_error }}</span><br>{% endif %}
@@ -311,6 +321,16 @@
       var btn = form.querySelector('button');
       btn.disabled = true;
       btn.textContent = '正在生成草稿…请稍候';
+    });
+  });
+
+  document.querySelectorAll('.copy-path-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(btn.dataset.path).then(function () {
+        var original = btn.textContent;
+        btn.textContent = '已复制';
+        setTimeout(function () { btn.textContent = original; }, 1500);
+      });
     });
   });
 </script>
