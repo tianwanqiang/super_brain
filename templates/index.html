@@ -28,44 +28,69 @@
 <body>
 
 <h1>super_brain 控制台</h1>
-<p>本机调试用的最小 UI，不是对外产品界面。当前 <span class="stat">{{ pending_count }}</span> 条留言待处理。</p>
+<p>本机调试/观测用的 UI，不是主入口——<strong>真正的主入口是在 Claude Code 对话里 <code>@agent 名字</code></strong>，
+这个页面只负责两件事：给"助手类"agent 一条不经过对话也能触发的自动化通道，以及展示当前状态。</p>
 
 {% if just_ran %}
 <div class="banner">已运行 dispatcher.py（{{ "dry-run" if dry_run else "真实执行" }}），输出见下方日志区。</div>
 {% endif %}
 
-<h2>Agents（{{ agents|length }}）</h2>
+<h2>@ 唤起（主入口，不在这个页面上操作）</h2>
 <table>
-  <tr><th>name</th><th>type</th><th>executor</th><th>description</th></tr>
-  {% for a in agents %}
+  <tr><th>@名字</th><th>定位</th><th>怎么用</th></tr>
+  {% for a in roundtable_agents %}
   <tr>
-    <td><code>{{ a.name }}</code></td>
-    <td>
-      {% if a.type == 'roundtable' %}<span class="pill pill-roundtable">{{ a.type }}</span>
-      {% else %}{{ a.type }}{% endif %}
-    </td>
-    <td>{% if a.executor %}<span class="pill pill-executor">{{ a.executor }}</span>{% else %}—{% endif %}</td>
+    <td><code>@{{ a.name }}</code> <span class="pill pill-roundtable">核心·圆桌决策</span></td>
     <td>{{ a.description }}</td>
+    <td>在 Claude Code 对话里说"召开圆桌讨论 XX 问题，找 @{{ a.name }} 等专家"——只能这样触发，UI/inbox 都做不到并行独立分析</td>
+  </tr>
+  {% endfor %}
+  {% for a in conversation_agents %}
+  <tr>
+    <td><code>@{{ a.name }}</code> <span class="pill" style="background:#e8e5df; color:#57503f;">对话内角色</span></td>
+    <td>{{ a.description }}</td>
+    <td>对话里直接说"@{{ a.name }} 帮我……"，靠当前会话的真实工具权限执行，不经过 inbox</td>
+  </tr>
+  {% endfor %}
+  {% for a in assistant_agents %}
+  <tr>
+    <td><code>@{{ a.name }}</code> <span class="pill pill-executor">助手·执行工具</span></td>
+    <td>{{ a.description }}</td>
+    <td>对话里说"@{{ a.name }} 处理一下"（推荐），或者用下面的自动化通道（免打开对话，适合批处理/测试）</td>
   </tr>
   {% endfor %}
 </table>
 
-<h2>新建留言</h2>
+<h2>首次配置：会议纪要存放目录</h2>
+{% if meeting_minutes_dir %}
+<p>已设置：<code>{{ meeting_minutes_dir }}</code>——<code>writer</code> 产出的会议纪要、
+<code>ops-assistant</code> 发现新素材，都读这个路径。</p>
+{% else %}
+<div class="banner" style="background:#fdecd2; border-color:#a35b00; color:#7a4400;">
+  还没设置——<code>writer</code> 写会议纪要、<code>ops-assistant</code> 找会议纪要素材，
+  现在都没有目录可用，这条流水线实际是断的。先在这里设一次，只需要设一次。
+</div>
+{% endif %}
+<form class="inline" method="post" action="{{ url_for('config_set') }}">
+  <input type="text" name="meeting_minutes_dir" placeholder="例如 G:\code\meeting-minutes" value="{{ meeting_minutes_dir or '' }}" required>
+  <button type="submit">保存到 config.json</button>
+</form>
+
+<h2>自动化通道（仅"助手·执行工具"类，走 inbox + dispatcher.py）</h2>
+<p style="font-size:12.5px; color:#888;">
+  只列出真的有 <code>executor</code>、走这条路会真实执行的 agent。<code>ship</code>/<code>coordinator</code>
+  和四个圆桌专家都不在这里——它们要么只能在对话里用，要么走 inbox 也只能拿到一段没什么用的单次建议，
+  放进来只会重新制造上次那种误解。
+</p>
 <form class="inline" method="post" action="{{ url_for('inbox_new') }}">
   <select name="to" required>
-    {% for a in agents %}
-    <option value="{{ a.name }}">{{ a.name }}{% if a.type == 'roundtable' %}（仅起草建议，非真圆桌）{% endif %}</option>
+    {% for a in assistant_agents %}
+    <option value="{{ a.name }}">{{ a.name }}</option>
     {% endfor %}
-    <option value="All">All</option>
   </select>
   <input type="text" name="message" placeholder="留言内容（单行，硬约束）" required>
   <button type="submit">追加到 inbox</button>
 </form>
-<p style="font-size:12.5px; color:#888; margin-top:-6px;">
-  注意：<code>roundtable</code> 类型的 agent（战略/财务/营销/法律）通过这里发留言，只会得到
-  dispatcher.py 起草的一段泛泛建议（调一次 DeepSeek），<strong>不是</strong>真正的两轮圆桌讨论——
-  真圆桌需要 Claude Code 用 Agent 工具并行唤起多个专家，这个 UI 目前做不到。
-</p>
 
 <h2>触发 dispatcher.py</h2>
 <form class="inline" method="post" action="{{ url_for('dispatcher_run') }}">

@@ -11,6 +11,7 @@ super_brain 控制台 - 最小可用 UI
     python G:\\code\\super_brain\\ui_app.py
     然后打开 http://127.0.0.1:5151
 """
+import json
 import logging
 import re
 import subprocess
@@ -21,6 +22,7 @@ from pathlib import Path
 from flask import Flask, redirect, render_template, request, url_for
 
 import dispatcher
+import publishers
 from log_setup import configure_logging
 
 configure_logging()
@@ -32,6 +34,35 @@ SUPER_BRAIN = Path(r"G:\code\super_brain")
 INBOX = SUPER_BRAIN / "inbox.md"
 LOG_FILE = SUPER_BRAIN / "logs" / "super_brain.log"
 DISPATCHER_SCRIPT = SUPER_BRAIN / "dispatcher.py"
+CONFIG_PATH = SUPER_BRAIN / "config.json"
+
+
+def categorize_agents(registry: dict[str, dict]) -> tuple[list, list, list]:
+    """跟 2026-08-15 定的原则对齐：不是简单按 type 分组，是按"该怎么被唤起"分组。
+    - roundtable：核心圆桌决策，只能在对话里 @ 唤起，inbox/UI 都做不到
+    - assistant：有 executor，走 inbox+dispatcher 是真实执行，但 @ 唤起同样有效、且是推荐方式
+    - conversation：其余（ship/coordinator/writer 这类）——没有 executor，只能对话内 @ 唤起，
+      放进 inbox 下拉框只会拿到没什么用的 v1 单次建议，不该出现在"自动化通道"里
+    """
+    roundtable, conversation, assistant = [], [], []
+    for entry in sorted(registry.values(), key=lambda a: a.get("name", "")):
+        if entry.get("type") == "roundtable":
+            roundtable.append(entry)
+        elif entry.get("executor"):
+            assistant.append(entry)
+        else:
+            conversation.append(entry)
+    return roundtable, conversation, assistant
+
+
+def load_config_safe() -> dict:
+    if not CONFIG_PATH.exists():
+        return {}
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(f"UI：读取 config.json 失败，当作空配置处理：{exc}")
+        return {}
 
 
 def parse_all_messages_for_display() -> list[dict]:
@@ -94,25 +125,35 @@ def run_dispatcher(dry_run: bool) -> str:
     return output
 
 
-@app.route("/")
-def index():
+def render_index(**extra):
     registry = dispatcher.load_agent_registry()
-    agents = sorted(registry.values(), key=lambda a: a.get("name", ""))
+    roundtable_agents, conversation_agents, assistant_agents = categorize_agents(registry)
     messages = parse_all_messages_for_display()
     pending_count = sum(1 for m in messages if m.get("status") == "pending")
+    config = load_config_safe()
 
-    recent_log = ""
-    if LOG_FILE.exists():
-        lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
-        recent_log = "\n".join(lines[-40:])
+    recent_log = extra.pop("recent_log", None)
+    if recent_log is None:
+        recent_log = "\n".join(
+            LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
+        ) if LOG_FILE.exists() else ""
 
     return render_template(
         "index.html",
-        agents=agents,
+        roundtable_agents=roundtable_agents,
+        conversation_agents=conversation_agents,
+        assistant_agents=assistant_agents,
         messages=messages,
         pending_count=pending_count,
         recent_log=recent_log,
+        meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
+        **extra,
     )
+
+
+@app.route("/")
+def index():
+    return render_index()
 
 
 @app.route("/inbox/new", methods=["POST"])
@@ -137,19 +178,22 @@ def inbox_new():
 def dispatcher_run():
     dry_run = request.form.get("mode") == "dry-run"
     output = run_dispatcher(dry_run)
-    registry = dispatcher.load_agent_registry()
-    agents = sorted(registry.values(), key=lambda a: a.get("name", ""))
-    messages = parse_all_messages_for_display()
-    pending_count = sum(1 for m in messages if m.get("status") == "pending")
-    return render_template(
-        "index.html",
-        agents=agents,
-        messages=messages,
-        pending_count=pending_count,
-        recent_log=output,
-        just_ran=True,
-        dry_run=dry_run,
-    )
+    return render_index(recent_log=output, just_ran=True, dry_run=dry_run)
+
+
+@app.route("/config/set", methods=["POST"])
+def config_set():
+    value = request.form.get("meeting_minutes_dir", "").strip()
+    if not value:
+        logger.warning("UI：会议纪要目录表单提交了空值，已忽略")
+        return redirect(url_for("index"))
+
+    config = load_config_safe()
+    config["MEETING_MINUTES_DIR"] = value
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    Path(value).mkdir(parents=True, exist_ok=True)
+    logger.info(f"UI：MEETING_MINUTES_DIR 已设置为 {value}（首次配置，之后不再需要重复问）")
+    return redirect(url_for("index"))
 
 
 if __name__ == "__main__":
