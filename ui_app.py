@@ -22,10 +22,11 @@ import re
 import secrets
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, redirect, render_template, request, session, url_for
+from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 import dispatcher
 import publishers
@@ -37,6 +38,42 @@ logger = logging.getLogger("super_brain.ui")
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)  # 仅本机单进程用，重启就换，不需要跨进程持久
+
+# 2026-08-15 修复：根因不只是"按钮没反馈"——之前 /roundtable/run 是同步阻塞处理，圆桌讨论
+# 跑多久（15-40 秒）请求就挂多久，而 Flask 开发服务器默认单线程，这期间整个服务器无法响应
+# 任何其他请求（连刷新页面都会卡住）。用户点了发送以为无响应，其实是页面真的进不来。
+# 修法：圆桌讨论放到后台线程执行，请求立刻返回，页面用 _current_run 状态显示"进行中"，
+# 前端轮询 /roundtable/status，跑完自动刷新展示结果。_roundtable_lock 保证同一时间只有
+# 一场真实讨论在跑，防止重复点击/多标签页把钱重复花出去。
+_roundtable_lock = threading.Lock()
+_state_lock = threading.Lock()
+_current_run: dict | None = None  # {"question", "agents", "started_at"}
+_last_run_error: str | None = None
+
+
+def _set_current_run(value: dict | None) -> None:
+    global _current_run
+    with _state_lock:
+        _current_run = value
+
+
+def _get_current_run() -> dict | None:
+    with _state_lock:
+        return _current_run
+
+
+def _set_last_error(message: str | None) -> None:
+    global _last_run_error
+    with _state_lock:
+        _last_run_error = message
+
+
+def _pop_last_error() -> str | None:
+    """跟 flask session 的 flash 效果一样——读一次就清空，不重复展示。"""
+    global _last_run_error
+    with _state_lock:
+        message, _last_run_error = _last_run_error, None
+        return message
 
 SUPER_BRAIN = Path(r"G:\code\super_brain")
 INBOX = SUPER_BRAIN / "inbox.md"
@@ -137,7 +174,9 @@ def render_chat(**extra):
     registry = dispatcher.load_agent_registry()
     roundtable_agents, _, _ = categorize_agents(registry)
     config = load_config_safe()
-    error = session.pop("roundtable_error", None)
+    # 表单校验/锁冲突这类错误在原始请求里就能立刻判断，走 session flash；
+    # 后台线程执行途中失败的错误，原始请求早就返回了，走 _last_run_error。
+    error = session.pop("roundtable_error", None) or _pop_last_error()
 
     return render_template(
         "index.html",
@@ -145,6 +184,7 @@ def render_chat(**extra):
         history=roundtable.load_roundtable_history(),
         meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
         roundtable_error=error,
+        current_run=_get_current_run(),
         **extra,
     )
 
@@ -186,6 +226,9 @@ def roundtable_run():
     """圆桌讨论的真实调用入口——直接调 roundtable.run_roundtable()（纯 Python，线程池并行
     唤起多个 agent，直连 DeepSeek API），不经过 inbox，不经过 dispatcher.py，也不经过
     Claude Code 的 Agent 工具。这是会花 DeepSeek 额度的真实调用，不是预览。
+
+    实际执行放到后台线程——本请求只负责校验+起线程，立刻返回，不阻塞 Flask 主线程。
+    这样"讨论进行中"这件事本身能被页面如实展示出来，而不是让整个服务器卡 15-40 秒。
     """
     agent_names = request.form.getlist("agents")
     question = request.form.get("question", "").strip()
@@ -197,17 +240,42 @@ def roundtable_run():
         session["roundtable_error"] = "至少选 2 位专家，并填写讨论的问题。"
         return redirect(url_for("index"))
 
-    logger.info(f"UI：触发圆桌讨论 -> question={question!r}, agents={agent_names}")
-    try:
-        roundtable.run_roundtable(agent_names, question)
-    except roundtable.RoundtableError as exc:
-        logger.warning(f"UI：圆桌讨论参数错误：{exc}")
-        session["roundtable_error"] = str(exc)
-    except Exception:
-        logger.exception("UI：圆桌讨论执行失败")
-        session["roundtable_error"] = "圆桌讨论执行失败，详情看 logs/super_brain.log"
+    if not _roundtable_lock.acquire(blocking=False):
+        logger.warning(
+            f"UI：圆桌讨论请求被拒绝——已有一场讨论正在进行中（大概率是重复点击/多标签页），"
+            f"本次提交的问题：{question!r}"
+        )
+        session["roundtable_error"] = "已经有一场圆桌讨论正在进行中，请等它结束（通常 15-40 秒）再提交，不用重复点击。"
+        return redirect(url_for("index"))
 
+    _set_current_run({
+        "question": question,
+        "agents": agent_names,
+        "started_at": datetime.now().strftime("%H:%M:%S"),
+    })
+    logger.info(f"UI：触发圆桌讨论（后台线程）-> question={question!r}, agents={agent_names}")
+
+    def _worker():
+        try:
+            roundtable.run_roundtable(agent_names, question)
+        except roundtable.RoundtableError as exc:
+            logger.warning(f"UI：圆桌讨论参数错误：{exc}")
+            _set_last_error(str(exc))
+        except Exception:
+            logger.exception("UI：圆桌讨论执行失败")
+            _set_last_error("圆桌讨论执行失败，详情看 logs/super_brain.log")
+        finally:
+            _set_current_run(None)
+            _roundtable_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
     return redirect(url_for("index"))
+
+
+@app.route("/roundtable/status")
+def roundtable_status():
+    """前端轮询用——讨论进行中时如实告知，跑完了就让前端自动刷新展示结果。"""
+    return jsonify({"running": _get_current_run() is not None})
 
 
 @app.route("/admin")
@@ -257,4 +325,4 @@ def config_set():
 
 if __name__ == "__main__":
     logger.info("===== super_brain UI 启动，http://127.0.0.1:5151 =====")
-    app.run(host="127.0.0.1", port=5151, debug=False)
+    app.run(host="127.0.0.1", port=5151, debug=False, threaded=True)
