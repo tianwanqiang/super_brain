@@ -23,6 +23,7 @@ from flask import Flask, redirect, render_template, request, url_for
 
 import dispatcher
 import publishers
+import roundtable
 from log_setup import configure_logging
 
 configure_logging()
@@ -179,6 +180,33 @@ def dispatcher_run():
     dry_run = request.form.get("mode") == "dry-run"
     output = run_dispatcher(dry_run)
     return render_index(recent_log=output, just_ran=True, dry_run=dry_run)
+
+
+@app.route("/roundtable/run", methods=["POST"])
+def roundtable_run():
+    """真实触发圆桌讨论——直接调 roundtable.run_roundtable()（Python 后台并行唤起多个 agent），
+    不经过 inbox，不经过 dispatcher.py。这是会花 DeepSeek 额度的真实调用，不是预览。
+    """
+    agent_names = request.form.getlist("agents")
+    question = request.form.get("question", "").strip()
+
+    if len(agent_names) < 2 or not question:
+        logger.warning(
+            f"UI：圆桌讨论表单校验失败（至少选 2 位专家 + 填问题），agents={agent_names}, question={question!r}"
+        )
+        return render_index(roundtable_error="至少选 2 位专家，并填写讨论的问题。")
+
+    logger.info(f"UI：触发圆桌讨论 -> question={question!r}, agents={agent_names}")
+    try:
+        result = roundtable.run_roundtable(agent_names, question)
+    except roundtable.RoundtableError as exc:
+        logger.warning(f"UI：圆桌讨论参数错误：{exc}")
+        return render_index(roundtable_error=str(exc))
+    except Exception:
+        logger.exception("UI：圆桌讨论执行失败")
+        return render_index(roundtable_error="圆桌讨论执行失败，详情看 logs/super_brain.log")
+
+    return render_index(roundtable_result=result)
 
 
 @app.route("/config/set", methods=["POST"])

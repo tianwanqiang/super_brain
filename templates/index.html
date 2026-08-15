@@ -42,7 +42,8 @@
   <tr>
     <td><code>@{{ a.name }}</code> <span class="pill pill-roundtable">核心·圆桌决策</span></td>
     <td>{{ a.description }}</td>
-    <td>在 Claude Code 对话里说"召开圆桌讨论 XX 问题，找 @{{ a.name }} 等专家"——只能这样触发，UI/inbox 都做不到并行独立分析</td>
+    <td>在 Claude Code 对话里说"召开圆桌讨论"，或者用下面"召开圆桌讨论"这个真实表单——
+      两条路径都是真的并行独立分析，不是单次建议</td>
   </tr>
   {% endfor %}
   {% for a in conversation_agents %}
@@ -60,6 +61,50 @@
   </tr>
   {% endfor %}
 </table>
+
+<h2>召开圆桌讨论（真实执行，Python 后台并行唤起，不经过 inbox）</h2>
+<p style="font-size:12.5px; color:#888;">
+  直接调 <code>roundtable.py</code>：勾选的专家真的并行独立分析（Round 1 互相看不见），
+  再互相交叉校验（Round 2），最后由 <code>writer</code> 写成正式会议纪要落盘到下面配置的目录。
+  这是会消耗 DeepSeek 额度的真实调用，不是预览。
+</p>
+{% if roundtable_error %}
+<div class="banner" style="background:#fdecd2; border-color:#a35b00; color:#7a4400;">{{ roundtable_error }}</div>
+{% endif %}
+<form class="inline" method="post" action="{{ url_for('roundtable_run') }}" style="flex-direction: column; align-items: stretch;">
+  <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:6px;">
+    {% for a in roundtable_agents %}
+    <label style="font-size:13.5px; display:flex; align-items:center; gap:4px;">
+      <input type="checkbox" name="agents" value="{{ a.name }}"> {{ a.name }}
+    </label>
+    {% endfor %}
+  </div>
+  <div style="display:flex; gap:8px;">
+    <input type="text" name="question" placeholder="要讨论的问题，例如：要不要把决策圆桌做成付费功能" required>
+    <button type="submit">召开圆桌（真实执行）</button>
+  </div>
+</form>
+
+{% if roundtable_result %}
+<div class="banner">
+  圆桌讨论完成——问题：{{ roundtable_result.question }}，参与：{{ roundtable_result.agents | join('、') }}
+  {% if roundtable_result.minutes_path %}
+    ，会议纪要已落盘：<code>{{ roundtable_result.minutes_path }}</code>
+  {% else %}
+    ，未落盘（没配置会议纪要目录，见下方"首次配置"）
+  {% endif %}
+</div>
+<h2>Round 1（独立分析，互不可见）</h2>
+{% for name, text in roundtable_result.round1.items() %}
+<p><strong>{{ name }}</strong></p>
+<pre>{{ text }}</pre>
+{% endfor %}
+<h2>Round 2（交叉校验）</h2>
+{% for name, text in roundtable_result.round2.items() %}
+<p><strong>{{ name }}</strong></p>
+<pre>{{ text }}</pre>
+{% endfor %}
+{% endif %}
 
 <h2>首次配置：会议纪要存放目录</h2>
 {% if meeting_minutes_dir %}
