@@ -7,3 +7,6 @@ config.json
 
 # dispatcher.py 运行时生成的建议草稿，不需要进版本控制
 dispatch_log/
+
+# 运行日志
+logs/

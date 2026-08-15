@@ -12,11 +12,14 @@ super_brain publishers - 真实发布能力
 凭据来自 config.json（已 gitignore，不进公开仓库）。
 """
 import json
+import logging
 import mimetypes
 import subprocess
 import urllib.request
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger("super_brain.publishers")
 
 SUPER_BRAIN = Path(r"G:\code\super_brain")
 CONFIG_PATH = SUPER_BRAIN / "config.json"
@@ -40,6 +43,7 @@ def load_config() -> dict:
 # ---------- 微信 ----------
 
 def wechat_get_access_token(appid: str, appkey: str) -> str:
+    logger.info(f"微信 step 1/3：换 access_token（appid={appid}）")
     url = (
         "https://api.weixin.qq.com/cgi-bin/token"
         f"?grant_type=client_credential&appid={appid}&secret={appkey}"
@@ -47,15 +51,19 @@ def wechat_get_access_token(appid: str, appkey: str) -> str:
     with urllib.request.urlopen(url, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     if "access_token" not in data:
+        logger.error(f"微信 step 1/3 失败：{data}")
         raise PublishError(f"获取微信 access_token 失败：{data}")
+    logger.info("微信 step 1/3 成功")
     return data["access_token"]
 
 
 def wechat_upload_thumb(access_token: str, image_url: str) -> str:
     """下载封面图，上传成微信永久素材，返回 thumb_media_id。"""
+    logger.info(f"微信 step 2/3：下载封面图并上传成永久素材（源：{image_url}）")
     with urllib.request.urlopen(image_url, timeout=30) as resp:
         image_bytes = resp.read()
         content_type = resp.headers.get_content_type() or "image/png"
+    logger.debug(f"封面图下载完成，{len(image_bytes)} 字节，content-type={content_type}")
 
     ext = mimetypes.guess_extension(content_type) or ".png"
     boundary = uuid.uuid4().hex
@@ -75,11 +83,14 @@ def wechat_upload_thumb(access_token: str, image_url: str) -> str:
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     if "media_id" not in data:
+        logger.error(f"微信 step 2/3 失败：{data}")
         raise PublishError(f"上传微信封面图失败：{data}")
+    logger.info(f"微信 step 2/3 成功，media_id={data['media_id']}")
     return data["media_id"]
 
 
 def wechat_create_draft(access_token: str, thumb_media_id: str, title: str, content_html: str) -> str:
+    logger.info(f"微信 step 3/3：创建草稿（标题：{title}，正文 {len(content_html)} 字符）")
     url = f"https://api.weixin.qq.com/cgi-bin/draft/add?access_token={access_token}"
     body = json.dumps({
         "articles": [{
@@ -100,16 +111,20 @@ def wechat_create_draft(access_token: str, thumb_media_id: str, title: str, cont
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     if "media_id" not in data:
+        logger.error(f"微信 step 3/3 失败：{data}")
         raise PublishError(f"创建微信草稿失败：{data}")
+    logger.info(f"微信 step 3/3 成功，draft_media_id={data['media_id']}")
     return data["media_id"]
 
 
 def publish_wechat_draft(title: str, content_html: str) -> dict:
     """完整流程：换 token -> 上传封面 -> 建草稿。只做到草稿，绝不群发。"""
+    logger.info("开始公众号草稿发布流程")
     config = load_config()
     access_token = wechat_get_access_token(config["WECHAT_APP_ID"], config["WECHAT_APP_KEY"])
     thumb_media_id = wechat_upload_thumb(access_token, config["WECHAT_DEFAULT_COVER_URL"])
     draft_media_id = wechat_create_draft(access_token, thumb_media_id, title, content_html)
+    logger.info("公众号草稿发布流程全部完成")
     return {"draft_media_id": draft_media_id, "thumb_media_id": thumb_media_id}
 
 
@@ -122,19 +137,25 @@ def publish_toutiao_draft(date: str) -> Path | None:
     返回 None 表示"当天没有 opc 素材，安全跳过"——这不是失败，调用方不应该当错误处理。
     """
     if not TOUTIAO_SCRIPT.exists():
+        logger.error(f"找不到 {TOUTIAO_SCRIPT}")
         raise PublishError(f"找不到 {TOUTIAO_SCRIPT}")
 
     opc_path = Path(r"G:\code") / f"opc_{date}.md"
     if not opc_path.exists():
+        logger.info(f"头条：{opc_path} 不存在，安全跳过")
         return None
 
+    logger.info(f"头条：调用 {TOUTIAO_SCRIPT.name} -Date {date}")
     result = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(TOUTIAO_SCRIPT), "-Date", date],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
+        logger.error(f"头条脚本退出码 {result.returncode}：{result.stderr or result.stdout}")
         raise PublishError(f"头条草稿生成失败（exit {result.returncode}）：{result.stderr or result.stdout}")
     draft_path = TOUTIAO_DRAFTS_DIR / f"toutiao_{date}.md"
     if not draft_path.exists():
+        logger.error(f"头条脚本退出码是 0，但没找到预期的草稿文件 {draft_path}")
         raise PublishError(f"脚本退出码是 0，但没找到预期的草稿文件 {draft_path}（opc 素材确实存在，属于真实异常）")
+    logger.info(f"头条草稿生成成功：{draft_path}")
     return draft_path
