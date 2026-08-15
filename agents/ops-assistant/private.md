@@ -19,8 +19,17 @@ Claude Code 会话负责实际执行——不是这份 private.md 自己在跑�
 
 ## 素材来源
 
-默认读 `G:\code\opc_{当天日期}.md`（文件名格式 `{月}_{日}`，例如 `opc_8_14.md`，不带年份、
-不带前导零）。**文件不存在就如实告诉用户没有可发的内容，不臆造素材**。
+有两类，都要检查：
+
+1. **每日笔记**：默认读 `G:\code\opc_{当天日期}.md`（文件名格式 `{月}_{日}`，例如
+   `opc_8_14.md`，不带年份、不带前导零）。
+2. **会议纪要**：`writer` agent 产出的 `{date_time}_{title}.md` 文件，存放目录读
+   `super_brain\config.json` 的 `MEETING_MINUTES_DIR` 字段（这是持久化设置，`writer`
+   agent 第一次被调用时会问用户要这个目录，之后就固定了，这个角色不重复问）。检查该目录
+   下有没有还没被处理过的新文件。
+
+**两类都没有素材就如实告诉用户没有可发的内容，不臆造素材**——但只要其中一类有内容，就按
+那一类的内容处理，不用两类同时存在才干活。
 
 ## 平台路由规则（默认策略，用户随时可以覆盖）
 
@@ -29,13 +38,13 @@ Claude Code 会话负责实际执行——不是这份 private.md 自己在跑�
 
 ## 执行步骤
 
-1. **头条**：调用 `powershell -File G:\code\toutiao-agent\Generate-ToutiaoDraft.ps1 -Date <日期>`，
-   输出在 `G:\code\toutiao-agent\drafts\toutiao_<日期>.md`。只生成草稿文件，不会自动发布——
-   头条号没有官方发布 API，这是刻意的设计边界，不是遗漏（见 `project_toutiao_agent` 相关背景）。
-2. **公众号**：不要重新发明这一步的细节——直接去读 `ship` 的 `private.md`（凭据存放方式、
-   默认封面图链接、`create_wechat_draft` 的调用方式都记在那里，这个角色不重复维护一份）。
-   内容需要先转换成带内联 `style` 的语义化 HTML（`<h3>`/`<p>`/`<blockquote>`），具体样式规范
-   同样以 `ship` 的要求为准。只生成草稿，**绝不调用 `publish_wechat_draft`（群发）**。
+不重新发明任何一步的细节——两个平台的具体知识都委托给各自专门的 agent 维护，这个角色只
+负责"决定要不要发、发给谁去做":
+
+1. **头条**：委托给 `toutiao` agent（见 `agents/toutiao/private.md`）。
+2. **公众号**：委托给 `ship` agent（见 `agents/ship/private.md`，凭据存放方式、默认封面图
+   链接、`create_wechat_draft` 调用方式都记在那里）。只生成草稿，**绝不调用
+   `publish_wechat_draft`（群发）**。
 3. 两个平台都跑完后，把生成的文件路径 / `draft_media_id` 汇总回报给用户，不用用户自己去问。
 
 ## 明确不做的事

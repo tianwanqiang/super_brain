@@ -1,23 +1,24 @@
 """
-super_brain dispatcher - v1
+super_brain dispatcher - v2
 
 真正的调度程序：从 agents.yaml 读取"合法 agent 有哪些"（统一注册表，不再靠扫描目录），
-扫描 inbox.md 里 Status: pending 的留言，按 To 字段分组给对应 agent，加载该 agent 的
-private.md 作为专属上下文，按 agents.yaml 里的元信息（type/sources/是否要求引用/是否要求
-免责声明）拼装 system prompt，调用 DeepSeek 起草"接下来该做什么"的建议，写进 dispatch_log/ 里。
+扫描 inbox.md 里 Status: pending 的留言，按 To 字段分组给对应 agent。
 
-新增一个 agent：在 agents.yaml 里加一条记录 + 建对应的 agents/<name>/private.md，不用改代码。
+两种处理方式，按 agents.yaml 里有没有 `executor` 字段区分：
+1. **有 executor**（目前是 toutiao / ops-assistant）：真的调用 publishers.py 里对应的函数
+   落地动作——生成头条草稿、建公众号草稿。只做到"草稿"，绝不调用群发/发布接口。成功后会把
+   inbox 里对应的留言自动标记成 done（这类动作已经有明确、安全的边界，不需要每次都等人工
+   确认才敢标记完成）。
+2. **没有 executor**（ship、roundtable 类型等）：保持 v1 的行为——加载 private.md 作为专属
+   上下文，调用 DeepSeek 起草"接下来该做什么"的建议，写进 dispatch_log/，不自动执行、不自动
+   改 inbox 状态。这类 agent 涉及的动作（git push、真正的专家分析）还没有对应的真实执行器。
 
-明确的边界（v1 只做到这里，不做更多）：
-- 不会真的去执行任何操作（不推代码、不建公众号草稿）——只起草建议，供人工或 Claude Code
-  会话看了之后自己决定要不要照做、怎么做。真正有后果的动作，还是需要一个有工具调用能力的
-  agent（Claude Code 本身）去落地，纯 Python 脚本没有 git/MCP 工具的调用权限。
-- 不会自动把留言标记成 done——状态变更代表"这件事真的处理完了"，脚本只是起草建议，
-  不代表处理完了，所以状态由人工/Claude Code 会话确认后再手动改。
+新增一个 agent：在 agents.yaml 里加一条记录 + 建对应的 agents/<name>/private.md；如果还想要
+真实执行能力，额外在 publishers.py 里写一个函数、在 EXECUTORS 里注册。
 
 用法：
     python G:\\code\\super_brain\\dispatcher.py --dry-run   # 只解析+校验+打印，不花钱，先跑这个
-    python G:\\code\\super_brain\\dispatcher.py             # 真的调用 DeepSeek，会消耗额度
+    python G:\\code\\super_brain\\dispatcher.py             # 真的执行/调用，会消耗额度或产生真实草稿
 """
 import json
 import re
@@ -28,11 +29,14 @@ from pathlib import Path
 
 import yaml
 
+import publishers
+
 SUPER_BRAIN = Path(r"G:\code\super_brain")
 INBOX = SUPER_BRAIN / "inbox.md"
 AGENTS_DIR = SUPER_BRAIN / "agents"
 AGENTS_CONFIG_PATH = SUPER_BRAIN / "agents.yaml"
 DISPATCH_LOG_DIR = SUPER_BRAIN / "dispatch_log"
+OPC_ROOT = Path(r"G:\code")
 
 # 复用 toutiao-agent 已经配好的 DeepSeek Key，避免重复要用户再配一份。
 # 如果以后想让 dispatcher 独立于 toutiao-agent，把这里改成 super_brain 自己的 config.json。
@@ -178,10 +182,11 @@ def build_system_prompt(agent_name: str, registry: dict[str, dict], private_cont
 
 
 def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
-                   model: str = "deepseek-chat", base_url: str = "https://api.deepseek.com/v1") -> str:
+                   model: str = "deepseek-chat", base_url: str = "https://api.deepseek.com/v1",
+                   max_tokens: int = 1500) -> str:
     body = json.dumps({
         "model": model,
-        "max_tokens": 1500,
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -196,6 +201,92 @@ def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data["choices"][0]["message"]["content"].strip()
+
+
+# ---------- 真实执行器（有 executor 字段的 agent 走这里，不再只是起草建议） ----------
+
+def read_opc_content(date: str) -> str | None:
+    opc_path = OPC_ROOT / f"opc_{date}.md"
+    if not opc_path.exists():
+        return None
+    return opc_path.read_text(encoding="utf-8-sig")
+
+
+def generate_wechat_html(opc_content: str, api_key: str) -> tuple[str, str]:
+    """调 DeepSeek 把 opc 笔记转成公众号标题 + 带内联 style 的 HTML 正文（微信不支持外部 CSS）。"""
+    system_prompt = (
+        "你是公众号排版助手。把用户给的 Markdown 笔记转换成可以直接提交给微信公众号草稿接口的 HTML。\n"
+        "规则：只能用 <h3>/<p>/<blockquote>/<strong>/<code> 这几个标签，每个标签都必须带内联 "
+        "style 属性（微信不支持 <style> 块或外部 CSS），字号 15-16px、行高 1.8-1.9，正文颜色 "
+        "#2e3a46，标题/重点用 #b8681e 做分隔线或强调色。\n"
+        "输出格式：第一行是文章标题（不要任何前缀符号），空一行，然后是完整 HTML 正文。"
+        "不要输出除此之外的任何解释文字。"
+    )
+    raw = call_deepseek(system_prompt, opc_content, api_key, max_tokens=4000)
+    parts = raw.strip().split("\n", 2)
+    title = parts[0].strip().lstrip("#").strip()
+    html = parts[-1].strip() if len(parts) > 1 else ""
+    if not title or not html:
+        raise publishers.PublishError(f"DeepSeek 生成的公众号内容格式不对，无法拆出标题/正文：{raw[:200]}")
+    return title, html
+
+
+def execute_toutiao_draft(date: str, api_key: str) -> dict:
+    path = publishers.publish_toutiao_draft(date)
+    if path is None:
+        return {"toutiao_skipped": f"opc_{date}.md 不存在，安全跳过（不算失败）"}
+    return {"toutiao": str(path)}
+
+
+def execute_ops_assistant_full(date: str, api_key: str) -> dict:
+    results: dict = {}
+
+    try:
+        path = publishers.publish_toutiao_draft(date)
+        if path is None:
+            results["toutiao_skipped"] = f"opc_{date}.md 不存在，安全跳过（不算失败）"
+        else:
+            results["toutiao"] = str(path)
+    except publishers.PublishError as exc:
+        results["toutiao_error"] = str(exc)
+
+    opc_content = read_opc_content(date)
+    if opc_content is None:
+        results["wechat_error"] = f"opc_{date}.md 不存在，跳过公众号（不臆造素材）"
+    else:
+        try:
+            title, html = generate_wechat_html(opc_content, api_key)
+            results["wechat"] = publishers.publish_wechat_draft(title, html)
+        except publishers.PublishError as exc:
+            results["wechat_error"] = str(exc)
+
+    return results
+
+
+# key 对应 agents.yaml 里的 executor 字段
+EXECUTORS = {
+    "toutiao_draft": execute_toutiao_draft,
+    "ops_assistant_full": execute_ops_assistant_full,
+}
+
+
+def mark_message_done(entry: dict) -> None:
+    """把 inbox.md 里跟 entry 完全匹配（From/To/Time/Message 全部一致）的那条留言状态改成 done。
+    只在真实执行成功后调用——避免匹配到内容恰好相同的另一条留言，用全部字段做精确匹配。
+    """
+    text = INBOX.read_text(encoding="utf-8-sig")
+    old_block = (
+        f"From: {entry.get('from', '')}\n"
+        f"To: {entry.get('to', '')}\n"
+        f"Time: {entry.get('time', '')}\n"
+        f"Status: pending\n"
+        f"Message: {entry.get('message', '')}"
+    )
+    new_block = old_block.replace("Status: pending", "Status: done", 1)
+    if old_block not in text:
+        print(f"警告：没能在 inbox.md 里精确匹配到这条留言，状态未自动更新：{entry}")
+        return
+    INBOX.write_text(text.replace(old_block, new_block, 1), encoding="utf-8")
 
 
 def main():
@@ -237,6 +328,45 @@ def main():
         DISPATCH_LOG_DIR.mkdir(exist_ok=True)
 
     for agent, messages in by_agent.items():
+        executor_key = registry.get(agent, {}).get("executor")
+
+        # ---- 有 executor：真实执行，不再走"起草建议"那一套 ----
+        if executor_key:
+            executor_fn = EXECUTORS.get(executor_key)
+            _now = datetime.now()
+            today = f"{_now.month}_{_now.day}"  # opc 文件用的日期格式：{月}_{日}，不带前导零
+
+            if dry_run:
+                print(f"[{agent}] {len(messages)} 条待处理留言 -> 会真实调用 executor "
+                      f"'{executor_key}'（日期参数：{today}），dry-run 不会真的执行。")
+                continue
+
+            if not executor_fn:
+                print(f"警告：[{agent}] 在 agents.yaml 里登记的 executor '{executor_key}' "
+                      f"在 EXECUTORS 里找不到对应函数，跳过，不会误当成起草模式处理。")
+                continue
+
+            print(f"[{agent}] {len(messages)} 条待处理留言，真实执行 '{executor_key}'（日期：{today}）...")
+            try:
+                results = executor_fn(today, api_key)
+            except Exception as exc:
+                print(f"  执行失败：{exc}")
+                continue
+
+            for key, value in results.items():
+                print(f"  -> {key}: {value}")
+
+            # 只有真实执行成功（没有任何 *_error 字段）才自动标记 done，
+            # 部分失败时留着 pending，方便人工看 dispatch 输出后决定要不要重跑。
+            if not any(k.endswith("_error") for k in results):
+                for m in messages:
+                    mark_message_done(m)
+                print(f"  -> inbox 里这 {len(messages)} 条留言已标记为 done")
+            else:
+                print("  -> 有步骤失败，留言状态保持 pending，未自动标记 done")
+            continue
+
+        # ---- 没有 executor：保持 v1 行为，只起草建议 ----
         print(f"[{agent}] {len(messages)} 条待处理留言{'（dry-run，不会真的调用）' if dry_run else '，起草建议中...'}")
         private_context = load_private_context(agent, registry)
         messages_text = "\n".join(

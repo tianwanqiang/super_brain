@@ -14,6 +14,20 @@
 #   sources                  仅 roundtable 类型需要——知识框架的来源书籍/理论体系，用于可审计
 #   output_requires_citation 仅 roundtable 类型需要——是否要求每条结论标注依据第几条规则
 #   disclaimer_required      仅涉及专业资质敏感领域（如法律）需要——是否强制要求免责措辞
+#   executor                 仅少数 agent 需要——对应 publishers.py 里一个真实执行函数的 key，
+#                            有这个字段的 agent，dispatcher.py 会真的调用该函数落地动作
+#                            （建草稿，不涉及群发/发布），而不是只调 DeepSeek 起草建议文字。
+#                            没有这个字段的 agent（比如 ship、roundtable 类型），保持原有的
+#                            "只起草建议"行为不变。
+#
+# 设计原则（2026-08-15 确认，别混用）：
+#   - 工具类助手（toutiao / ops-assistant 这类）：动作是确定性的、机械的，不需要"独立判断"
+#     这个环节，最好的实现是 dispatcher.py 直接调 publishers.py 里的函数（executor 字段），
+#     不要套 inbox 异步留言协议——那套协议是为"不需要人干等"设计的，用在这里只会徒增一次
+#     读写文件和状态机维护的成本，换不来任何东西。
+#   - 圆桌讨论 agent（roundtable 类型）：价值恰恰来自"真正独立的推理过程"本身，不能用
+#     executor 简化成直接函数调用——那样会把它们退化成工具类助手，丢掉圆桌讨论最核心的
+#     东西（独立视角之间真实的交叉校验）。roundtable 类型的 agent 不应该加 executor 字段。
 
 version: 1
 
@@ -68,7 +82,19 @@ agents:
     output_requires_citation: true
     disclaimer_required: true
 
+  - name: toutiao
+    type: execution
+    description: 生成头条号文章草稿（调用 G:\code\toutiao-agent 的 DeepSeek 逻辑），不涉及登录/发布
+    knowledge_path: agents/toutiao/private.md
+    executor: toutiao_draft
+
+  - name: writer
+    type: execution
+    description: 把圆桌讨论的原始记录写成正式会议纪要（{date_time}_{title}.md），对话内 @ 触发，不经过 inbox
+    knowledge_path: agents/writer/private.md
+
   - name: ops-assistant
     type: execution
-    description: 读取当天的 opc 内容，分发到头条和公众号生成待审阅草稿；默认两个平台都发，不自动发布/群发
+    description: 读取当天的 opc 内容 + 会议纪要目录里的新文件，分发到头条和公众号生成待审阅草稿；默认两个平台都发，不自动发布/群发
     knowledge_path: agents/ops-assistant/private.md
+    executor: ops_assistant_full

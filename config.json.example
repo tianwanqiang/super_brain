@@ -1,0 +1,6 @@
+{
+  "WECHAT_APP_ID": "wx-your-appid-here",
+  "WECHAT_APP_KEY": "your-wechat-app-secret-here",
+  "WECHAT_DEFAULT_COVER_URL": "https://mmbiz.qpic.cn/your-default-cover-image-url",
+  "MEETING_MINUTES_DIR": "会议纪要存放目录，writer agent 第一次被调用时会问你要这个值，问完自动写进这里，不用手动填"
+}
