@@ -42,14 +42,14 @@
   <tr><th>@名字</th><th>定位</th><th>怎么用</th></tr>
   {% for a in conversation_agents %}
   <tr>
-    <td><code>@{{ a.name }}</code> <span class="pill" style="background:#e8e5df; color:#57503f;">对话内角色</span></td>
+    <td><code>@{{ a.name }}</code> {{ agent_label(a.name) }} <span class="pill" style="background:#e8e5df; color:#57503f;">对话内角色</span></td>
     <td>{{ a.description }}</td>
     <td>对话里直接说"@{{ a.name }} 帮我……"，靠当前会话的真实工具权限执行，不经过 inbox</td>
   </tr>
   {% endfor %}
   {% for a in assistant_agents %}
   <tr>
-    <td><code>@{{ a.name }}</code> <span class="pill pill-executor">助手·执行工具</span></td>
+    <td><code>@{{ a.name }}</code> {{ agent_label(a.name) }} <span class="pill pill-executor">助手·执行工具</span></td>
     <td>{{ a.description }}</td>
     <td>对话里说"@{{ a.name }} 处理一下"（推荐），或者用下面的自动化通道（免打开对话，适合批处理/测试）</td>
   </tr>
@@ -78,7 +78,7 @@
 <form class="inline" method="post" action="{{ url_for('inbox_new') }}">
   <select name="to" required>
     {% for a in assistant_agents %}
-    <option value="{{ a.name }}">{{ a.name }}</option>
+    <option value="{{ a.name }}">{{ agent_label(a.name) }}（{{ a.name }}）</option>
     {% endfor %}
   </select>
   <input type="text" name="message" placeholder="留言内容（单行，硬约束）" required>

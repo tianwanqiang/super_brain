@@ -29,6 +29,7 @@ from pathlib import Path
 from flask import Flask, jsonify, redirect, render_template, request, session, url_for
 
 import dispatcher
+import i18n
 import publishers
 import roundtable
 from log_setup import configure_logging
@@ -38,6 +39,7 @@ logger = logging.getLogger("super_brain.ui")
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)  # 仅本机单进程用，重启就换，不需要跨进程持久
+app.jinja_env.globals["agent_label"] = i18n.agent_label  # 模板里到处能用，不用每次显式传
 
 # 2026-08-15 修复：根因不只是"按钮没反馈"——之前 /roundtable/run 是同步阻塞处理，圆桌讨论
 # 跑多久（15-40 秒）请求就挂多久，而 Flask 开发服务器默认单线程，这期间整个服务器无法响应
@@ -75,11 +77,45 @@ def _pop_last_error() -> str | None:
         message, _last_run_error = _last_run_error, None
         return message
 
+
+# 2026-08-15 新增：圆桌讨论出会议纪要之后，直接调 ops-assistant 写头条+公众号草稿——
+# 跟圆桌讨论一样是真实付费调用（DeepSeek + 微信 API），同样的教训，同样的模式：
+# 后台线程执行 + 锁防重复点击 + 状态轮询，不再犯"同步阻塞卡住整个服务器"的错误。
+_draft_lock = threading.Lock()
+_current_draft: dict | None = None  # {"minutes_path", "started_at"}
+_last_draft_error: str | None = None
+
+
+def _set_current_draft(value: dict | None) -> None:
+    global _current_draft
+    with _state_lock:
+        _current_draft = value
+
+
+def _get_current_draft() -> dict | None:
+    with _state_lock:
+        return _current_draft
+
+
+def _set_draft_error(message: str | None) -> None:
+    global _last_draft_error
+    with _state_lock:
+        _last_draft_error = message
+
+
+def _pop_draft_error() -> str | None:
+    global _last_draft_error
+    with _state_lock:
+        message, _last_draft_error = _last_draft_error, None
+        return message
+
+
 SUPER_BRAIN = Path(r"G:\code\super_brain")
 INBOX = SUPER_BRAIN / "inbox.md"
 LOG_FILE = SUPER_BRAIN / "logs" / "super_brain.log"
 DISPATCHER_SCRIPT = SUPER_BRAIN / "dispatcher.py"
 CONFIG_PATH = SUPER_BRAIN / "config.json"
+DRAFT_LOG_DIR = SUPER_BRAIN / "draft_log"
 
 
 def categorize_agents(registry: dict[str, dict]) -> tuple[list, list, list]:
@@ -169,14 +205,44 @@ def run_dispatcher(dry_run: bool) -> str:
     return output
 
 
+def load_draft_log() -> dict[str, dict]:
+    """按 minutes_path 建索引——history 渲染时按会议纪要路径查有没有生成过草稿，
+    刷新页面/重启服务都不丢，跟 roundtable_log 是同一个持久化思路。
+    """
+    if not DRAFT_LOG_DIR.exists():
+        return {}
+    index: dict[str, dict] = {}
+    for path in DRAFT_LOG_DIR.glob("*.json"):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8-sig"))
+            index[entry["minutes_path"]] = entry
+        except (json.JSONDecodeError, OSError, KeyError):
+            logger.warning(f"UI：草稿记录读取失败，跳过：{path}")
+    return index
+
+
+def persist_draft_log(minutes_path: str, result: dict) -> None:
+    DRAFT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "minutes_path": minutes_path,
+        "result": result,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    slug = re.sub(r"[^\w一-鿿-]", "-", Path(minutes_path).stem)[:40].strip("-") or "untitled"
+    out_path = DRAFT_LOG_DIR / f"{slug}.json"
+    out_path.write_text(json.dumps(entry, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info(f"UI：草稿生成记录已落盘：{out_path}")
+
+
 def render_chat(**extra):
     """主界面：圆桌讨论聊天窗口。"""
     registry = dispatcher.load_agent_registry()
     roundtable_agents, _, _ = categorize_agents(registry)
     config = load_config_safe()
     # 表单校验/锁冲突这类错误在原始请求里就能立刻判断，走 session flash；
-    # 后台线程执行途中失败的错误，原始请求早就返回了，走 _last_run_error。
+    # 后台线程执行途中失败的错误，原始请求早就返回了，走 _last_run_error / _last_draft_error。
     error = session.pop("roundtable_error", None) or _pop_last_error()
+    draft_error = session.pop("draft_error", None) or _pop_draft_error()
 
     return render_template(
         "index.html",
@@ -185,6 +251,9 @@ def render_chat(**extra):
         meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
         roundtable_error=error,
         current_run=_get_current_run(),
+        draft_log=load_draft_log(),
+        current_draft=_get_current_draft(),
+        draft_error=draft_error,
         **extra,
     )
 
@@ -276,6 +345,53 @@ def roundtable_run():
 def roundtable_status():
     """前端轮询用——讨论进行中时如实告知，跑完了就让前端自动刷新展示结果。"""
     return jsonify({"running": _get_current_run() is not None})
+
+
+@app.route("/minutes/draft", methods=["POST"])
+def minutes_draft():
+    """圆桌讨论出会议纪要之后，直接调助手 agent（ops-assistant）把它写成头条 + 公众号草稿。
+    跟圆桌讨论一样：后台线程执行、锁防重复点击、状态轮询，避免重复付费调用。
+    """
+    minutes_path = request.form.get("minutes_path", "").strip()
+    if not minutes_path:
+        session["draft_error"] = "没有会议纪要路径，没法生成草稿。"
+        return redirect(url_for("index"))
+
+    if not _draft_lock.acquire(blocking=False):
+        logger.warning(f"UI：草稿生成请求被拒绝——已有一份在生成中（大概率重复点击），minutes_path={minutes_path!r}")
+        session["draft_error"] = "已经有一份草稿正在生成中，请等它结束再提交。"
+        return redirect(url_for("index"))
+
+    _set_current_draft({
+        "minutes_path": minutes_path,
+        "started_at": datetime.now().strftime("%H:%M:%S"),
+    })
+    logger.info(f"UI：触发助手 agent 生成草稿（后台线程）-> minutes_path={minutes_path!r}")
+
+    def _worker():
+        try:
+            api_key = json.loads(
+                dispatcher.DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig")
+            )["DEEPSEEK_API_KEY"]
+            result = dispatcher.execute_ops_assistant_from_minutes(minutes_path, api_key)
+            persist_draft_log(minutes_path, result)
+        except FileNotFoundError as exc:
+            logger.warning(f"UI：草稿生成失败：{exc}")
+            _set_draft_error(str(exc))
+        except Exception:
+            logger.exception("UI：草稿生成失败")
+            _set_draft_error("草稿生成失败，详情看 logs/super_brain.log")
+        finally:
+            _set_current_draft(None)
+            _draft_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return redirect(url_for("index"))
+
+
+@app.route("/minutes/draft/status")
+def minutes_draft_status():
+    return jsonify({"running": _get_current_draft() is not None})
 
 
 @app.route("/admin")

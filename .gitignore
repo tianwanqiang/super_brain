@@ -13,3 +13,6 @@ logs/
 
 # 圆桌讨论原始记录（question/round1/round2 的 JSON 落地，供 UI 聊天窗口重建历史用）
 roundtable_log/
+
+# 会议纪要转草稿的执行记录（同样是运行时产物，供 UI 展示"已生成过草稿"用）
+draft_log/

@@ -269,6 +269,66 @@ def execute_ops_assistant_full(date: str, api_key: str) -> dict:
     return results
 
 
+def generate_toutiao_article(content: str, api_key: str) -> str:
+    """跟 toutiao-agent 的 Generate-ToutiaoDraft.ps1 用同一套 system prompt——只是输入源从
+    固定的 opc_{date}.md 换成任意内容（这里是会议纪要），保持同样的候选标题/正文/标签/分类
+    结构，不重新发明改写逻辑。
+    """
+    system_prompt = (
+        "你是一名资深今日头条（头条号）内容运营，负责把工作素材改写成适合头条号发布的图文文章。\n\n"
+        "头条读者和平台特点：\n"
+        "- 标题要直白、有信息增量，避免\"震惊体\"和标题党，但要有一个清晰的钩子（数字/对比/反常识/疑问）\n"
+        "- 正文段落要短（2-4行一段），信息密度高，少用书面语和空话\n"
+        "- 避免营销号浮夸语气，观点要有具体案例或数据支撑（只使用素材里真实提到的信息，不要编造）\n"
+        "- 结尾可以留一个自然的互动引导（提问/求关注），不要生硬\n\n"
+        "请基于我提供的素材，输出以下结构（用于人工审阅后手动粘贴进头条号后台，不要输出多余的解释文字）：\n\n"
+        "## 候选标题\n给出 3 个不同角度的候选标题（编号列出）。\n\n"
+        "## 正文\n完整正文（800-1500字），用纯文本自然段落输出，段落之间空一行分隔，"
+        "不要使用任何 Markdown 语法符号（不要 #、不要 **加粗**、不要项目符号），因为这段文字会被"
+        "直接复制粘贴进头条号网页编辑器。如果素材里包含 URL 链接，去掉 Markdown 链接语法包装，"
+        "但必须把完整的 URL 文本原样保留在正文里，绝对不能写\"链接在文末\"这类没有实际网址的占位说法。\n\n"
+        "## 建议标签\n3-5 个适合头条号的标签，逗号分隔。\n\n"
+        "## 建议分类\n给出一个最贴合的头条号内容分类（如：职场、科技、创业、AI、数码等）。"
+    )
+    return call_deepseek(system_prompt, content, api_key, max_tokens=4000)
+
+
+def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
+    """圆桌讨论产出会议纪要之后，直接调 ops-assistant 把这份纪要写成头条 + 公众号草稿——
+    跟 execute_ops_assistant_full 是同一个角色，只是输入源从"当天 opc"换成"某一份具体的
+    会议纪要文件"，这条路径由 UI 直接触发，不经过 inbox。
+    """
+    path = Path(minutes_path)
+    if not path.exists():
+        raise FileNotFoundError(f"会议纪要文件不存在：{minutes_path}")
+    content = path.read_text(encoding="utf-8-sig")
+
+    results: dict = {}
+
+    try:
+        article = generate_toutiao_article(content, api_key)
+        slug = re.sub(r"[^\w一-鿿-]", "-", path.stem)[:40].strip("-") or "untitled"
+        draft_path = publishers.TOUTIAO_DRAFTS_DIR / f"toutiao_from_minutes_{slug}.md"
+        draft_path.parent.mkdir(parents=True, exist_ok=True)
+        header = f"本文由 DeepSeek 根据会议纪要 {path.name} 自动生成草稿，发布前请人工审阅。\n\n---\n\n"
+        draft_path.write_text(header + article, encoding="utf-8")
+        results["toutiao"] = str(draft_path)
+        logger.info(f"[ops-assistant] 从会议纪要生成头条草稿成功：{draft_path}")
+    except Exception as exc:
+        logger.exception("[ops-assistant] 从会议纪要生成头条草稿失败")
+        results["toutiao_error"] = str(exc)
+
+    try:
+        title, html = generate_wechat_html(content, api_key)
+        results["wechat"] = publishers.publish_wechat_draft(title, html)
+        logger.info(f"[ops-assistant] 从会议纪要生成公众号草稿成功：{title!r}")
+    except publishers.PublishError as exc:
+        logger.warning(f"[ops-assistant] 从会议纪要生成公众号草稿失败：{exc}")
+        results["wechat_error"] = str(exc)
+
+    return results
+
+
 # key 对应 agents.yaml 里的 executor 字段
 EXECUTORS = {
     "toutiao_draft": execute_toutiao_draft,

@@ -78,6 +78,17 @@
   .bubble-synthesis a { color: #1e5c2f; font-weight: 600; }
   .bubble-synthesis.skip { background: #f1eee7; border-color: #8a7f68; color: #5c5340; }
 
+  .bubble-draft {
+    align-self: stretch; background: #eef2fb; border: 1px solid #34508a; color: #253a63;
+    padding: 12px 16px; border-radius: 10px; font-size: 13px; line-height: 1.7;
+  }
+  .bubble-draft .err { color: #8a2e20; }
+  .draft-form { align-self: flex-start; }
+  .draft-form button {
+    padding: 6px 14px; border: 1px solid #34508a; border-radius: 999px; background: transparent;
+    color: #34508a; font-size: 12.5px; cursor: pointer;
+  }
+
   .bubble-pending {
     align-self: flex-start; max-width: 78%; background: var(--surface); border: 1px dashed var(--border);
     padding: 10px 14px; border-radius: 2px 12px 12px 12px; font-size: 13px; color: var(--muted);
@@ -139,6 +150,9 @@
 {% if roundtable_error %}
 <div class="banner banner-error">{{ roundtable_error }}</div>
 {% endif %}
+{% if draft_error %}
+<div class="banner banner-error">{{ draft_error }}</div>
+{% endif %}
 
 <main class="chat" id="chat">
   {% if not history %}
@@ -151,13 +165,15 @@
   {% for turn in history %}
   <div class="turn">
     <div class="bubble-user">{{ turn.question }}</div>
-    <div class="turn-meta">{{ turn.timestamp }} · 参与专家：{{ turn.agents | join('、') }}</div>
+    <div class="turn-meta">{{ turn.timestamp }} · 参与专家：
+      {%- for n in turn.agents %} {{ agent_label(n) }}{% if not loop.last %}、{% endif %}{% endfor %}
+    </div>
 
     <div class="round-label">Round 1 · 独立分析（互相看不见）</div>
     <div class="agent-row">
       {% for name, text in turn.round1.items() %}
       <div class="bubble-agent" style="--agent-color: {{ agent_colors.get(name, '#0e6e76') }}">
-        <span class="agent-name">{{ name }}</span>{{ text }}
+        <span class="agent-name">{{ agent_label(name) }}</span>{{ text }}
       </div>
       {% endfor %}
     </div>
@@ -166,13 +182,35 @@
     <div class="agent-row">
       {% for name, text in turn.round2.items() %}
       <div class="bubble-agent" style="--agent-color: {{ agent_colors.get(name, '#0e6e76') }}">
-        <span class="agent-name">{{ name }}</span>{{ text }}
+        <span class="agent-name">{{ agent_label(name) }}</span>{{ text }}
       </div>
       {% endfor %}
     </div>
 
     {% if turn.minutes_path %}
     <div class="bubble-synthesis">正式会议纪要已生成：<code>{{ turn.minutes_path }}</code></div>
+
+    {% set draft = draft_log.get(turn.minutes_path) %}
+    {% if current_draft and current_draft.minutes_path == turn.minutes_path %}
+    <div class="bubble-pending" id="pendingDraft" data-minutes-path="{{ turn.minutes_path }}">
+      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+      {{ agent_label('ops-assistant') }}正在把这份纪要写成头条 + 公众号草稿，通常需要 15-30 秒
+    </div>
+    {% elif draft %}
+    <div class="bubble-draft">
+      <strong>{{ agent_label('ops-assistant') }}已生成草稿</strong>（{{ draft.timestamp }}）<br>
+      {% if draft.result.toutiao %}头条草稿：<code>{{ draft.result.toutiao }}</code><br>{% endif %}
+      {% if draft.result.toutiao_error %}<span class="err">头条草稿生成失败：{{ draft.result.toutiao_error }}</span><br>{% endif %}
+      {% if draft.result.wechat %}公众号草稿已建好（draft_media_id: {{ draft.result.wechat.draft_media_id }}），去公众号后台"草稿箱"查看<br>{% endif %}
+      {% if draft.result.wechat_error %}<span class="err">公众号草稿生成失败：{{ draft.result.wechat_error }}</span><br>{% endif %}
+    </div>
+    {% else %}
+    <form class="draft-form" method="post" action="{{ url_for('minutes_draft') }}">
+      <input type="hidden" name="minutes_path" value="{{ turn.minutes_path }}">
+      <button type="submit">调用助手 agent 直接撰写草稿</button>
+    </form>
+    {% endif %}
+
     {% else %}
     <div class="bubble-synthesis skip">未落盘正式会议纪要（当时没配置存放目录），原始记录仍保留在上面。</div>
     {% endif %}
@@ -182,7 +220,9 @@
   {% if current_run %}
   <div class="turn" id="pendingTurn">
     <div class="bubble-user">{{ current_run.question }}</div>
-    <div class="turn-meta">{{ current_run.started_at }} 发起 · 参与专家：{{ current_run.agents | join('、') }}</div>
+    <div class="turn-meta">{{ current_run.started_at }} 发起 · 参与专家：
+      {%- for n in current_run.agents %} {{ agent_label(n) }}{% if not loop.last %}、{% endif %}{% endfor %}
+    </div>
     <div class="bubble-pending">
       <span class="dot"></span><span class="dot"></span><span class="dot"></span>
       讨论进行中——{{ current_run.agents | length }} 位专家正在独立分析，通常需要 15-40 秒，页面会自动刷新
@@ -195,7 +235,7 @@
   <div class="expert-chips">
     {% for a in roundtable_agents %}
     <label data-agent="{{ a.name }}">
-      <input type="checkbox" name="agents" value="{{ a.name }}"><span>{{ a.name }} · {{ a.description[:14] }}…</span>
+      <input type="checkbox" name="agents" value="{{ a.name }}"><span>{{ agent_label(a.name) }} · {{ a.description[:14] }}…</span>
     </label>
     {% endfor %}
   </div>
@@ -250,6 +290,29 @@
         .catch(function () { /* 网络抖动，下一次轮询再试 */ });
     }, 3000);
   }
+
+  // "调用助手 agent 直接撰写草稿"同样是后台线程执行，同样的轮询套路。
+  if (document.getElementById('pendingDraft')) {
+    var draftPoll = setInterval(function () {
+      fetch('{{ url_for("minutes_draft_status") }}')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.running) {
+            clearInterval(draftPoll);
+            window.location.reload();
+          }
+        })
+        .catch(function () { /* 网络抖动，下一次轮询再试 */ });
+    }, 3000);
+  }
+
+  document.querySelectorAll('.draft-form').forEach(function (form) {
+    form.addEventListener('submit', function () {
+      var btn = form.querySelector('button');
+      btn.disabled = true;
+      btn.textContent = '正在生成草稿…请稍候';
+    });
+  });
 </script>
 
 </body>
