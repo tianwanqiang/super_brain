@@ -109,6 +109,8 @@
     padding: 10px 14px; border-radius: 2px 12px 12px 12px; font-size: 13.5px; line-height: 1.6; white-space: pre-wrap;
   }
   .bubble-agent .agent-name { font-weight: 700; font-size: 12.5px; color: var(--agent-color, var(--accent)); margin-bottom: 4px; display: block; }
+  .bubble-agent.streaming { animation: breathe 1.6s infinite ease-in-out; }
+  @keyframes breathe { 0%, 100% { border-left-width: 4px; } 50% { border-left-width: 7px; } }
 
   .bubble-synthesis {
     align-self: stretch; background: #eaf5ec; border: 1px solid #1e7a3c; color: #1e5c2f;
@@ -235,7 +237,7 @@
   <div class="empty-state">
     <h2>新建会话</h2>
     <p>在下面勾选 2 位以上专家，输入要讨论的问题，圆桌讨论就会真的并行独立分析、交叉校验，
-    最后写成正式会议纪要——全程 Python 直连 DeepSeek API，不依赖 Claude Code 对话。
+    最后写成正式会议纪要——
     同一个会话里可以继续追问，专家会记得之前讨论过什么。</p>
   </div>
   {% endif %}
@@ -343,42 +345,171 @@
   var composer = document.getElementById('composer');
   var sendBtn = document.getElementById('sendBtn');
   var hint = document.getElementById('composerHint');
+  var AGENT_LABELS = {{ agent_labels_json | safe }};
+  var AGENT_COLORS = {strategy: '#6b3fa0', finance: '#0e6e76', marketing: '#a35b00', legal: '#3f5b7a'};
+  var ORIGINAL_SEND_LABEL = sendBtn.textContent;
+
+  function labelOf(name) { return AGENT_LABELS[name] || name; }
+
+  function fallbackToPolling() {
+    // SSE 不可用/连接异常时的兜底——退化成老的轮询整页刷新，行为跟 streaming 之前完全一致。
+    var poll = setInterval(function () {
+      fetch('{{ url_for("roundtable_status") }}')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.running) { clearInterval(poll); window.location.reload(); }
+        })
+        .catch(function () { /* 网络抖动，下一次轮询再试 */ });
+    }, 3000);
+  }
+
+  function startStreaming(conversationId, question, agentNames) {
+    var newUrl = '{{ url_for("index") }}?conversation=' + encodeURIComponent(conversationId);
+    window.history.pushState({}, '', newUrl);
+
+    var emptyState = chat.querySelector('.empty-state');
+    if (emptyState) emptyState.remove();
+
+    var turnDiv = document.createElement('div');
+    turnDiv.className = 'turn';
+    var userBubble = document.createElement('div');
+    userBubble.className = 'bubble-user';
+    userBubble.textContent = question;
+    var meta = document.createElement('div');
+    meta.className = 'turn-meta';
+    meta.textContent = '讨论进行中…参与专家：' + agentNames.map(labelOf).join('、');
+    turnDiv.appendChild(userBubble);
+    turnDiv.appendChild(meta);
+
+    ['1', '2'].forEach(function (roundNum) {
+      var label = document.createElement('div');
+      label.className = 'round-label';
+      label.textContent = roundNum === '1' ? 'Round 1 · 独立分析（互相看不见）' : 'Round 2 · 交叉校验';
+      var row = document.createElement('div');
+      row.className = 'agent-row';
+      row.setAttribute('data-round', roundNum);
+      turnDiv.appendChild(label);
+      turnDiv.appendChild(row);
+    });
+
+    chat.appendChild(turnDiv);
+    chat.scrollTop = chat.scrollHeight;
+
+    var bubbles = {};
+    function bubbleFor(agentName, roundNum) {
+      var key = roundNum + '-' + agentName;
+      if (bubbles[key]) return bubbles[key];
+      var container = turnDiv.querySelector('.agent-row[data-round="' + roundNum + '"]');
+      var bubble = document.createElement('div');
+      bubble.className = 'bubble-agent streaming';
+      bubble.style.setProperty('--agent-color', AGENT_COLORS[agentName] || '#0e6e76');
+      var nameSpan = document.createElement('span');
+      nameSpan.className = 'agent-name';
+      nameSpan.textContent = labelOf(agentName) + '（思考中…）';
+      var textNode = document.createTextNode('');
+      bubble.appendChild(nameSpan);
+      bubble.appendChild(textNode);
+      container.appendChild(bubble);
+      bubbles[key] = { el: bubble, nameEl: nameSpan, textNode: textNode, startedContent: false };
+      chat.scrollTop = chat.scrollHeight;
+      return bubbles[key];
+    }
+
+    var es = new EventSource('{{ url_for("roundtable_stream", conversation_id="__ID__") }}'.replace('__ID__', encodeURIComponent(conversationId)));
+
+    es.onmessage = function (evt) {
+      var msg = JSON.parse(evt.data);
+
+      if (msg.type === 'run_done' || msg.type === 'error') {
+        es.close();
+        if (msg.type === 'error') {
+          hint.textContent = msg.message || '出错了，详情看日志';
+          hint.style.color = '#a35b00';
+        }
+        window.location.reload();
+        return;
+      }
+
+      if (msg.type === 'reasoning') {
+        var b = bubbleFor(msg.agent, msg.round);
+        if (!b.startedContent) b.nameEl.textContent = labelOf(msg.agent) + '（思考中…）';
+        return;
+      }
+
+      if (msg.type === 'content') {
+        var b2 = bubbleFor(msg.agent, msg.round);
+        if (!b2.startedContent) {
+          b2.startedContent = true;
+          b2.nameEl.textContent = labelOf(msg.agent);
+        }
+        b2.textNode.textContent += msg.delta;
+        chat.scrollTop = chat.scrollHeight;
+        return;
+      }
+
+      if (msg.type === 'agent_done') {
+        var key = msg.round + '-' + msg.agent;
+        if (bubbles[key]) bubbles[key].el.classList.remove('streaming');
+      }
+    };
+
+    es.onerror = function () {
+      es.close();
+      fallbackToPolling();
+    };
+  }
 
   composer.addEventListener('submit', function (e) {
-    var checked = composer.querySelectorAll('input[name=agents]:checked').length;
+    e.preventDefault();
+
+    var checked = Array.from(composer.querySelectorAll('input[name=agents]:checked')).map(function (el) { return el.value; });
     var question = composer.querySelector('textarea[name=question]').value.trim();
 
-    if (checked < 2 || !question) {
-      e.preventDefault();
+    if (checked.length < 2 || !question) {
       hint.textContent = '至少选 2 位专家，并填写问题，才能召开圆桌。';
       hint.style.color = '#a35b00';
       return;
     }
 
-    // 关键修复：点一下就立刻禁用按钮 + 换成明确的"处理中"文案，
+    // 关键修复（保留自 2026-08-15 的教训）：点一下就立刻禁用按钮 + 换成明确的"处理中"文案，
     // 不然用户以为没反应会连点很多次，每次点击都是一次真实付费调用。
     sendBtn.disabled = true;
-    sendBtn.textContent = '讨论进行中…请稍候（15-40 秒），不要重复点击';
-    hint.textContent = '正在并行唤起专家，独立分析中，请勿刷新或重复提交……';
+    sendBtn.textContent = '讨论进行中…（实时展示，请稍候）';
+    hint.textContent = '正在并行唤起专家，独立分析中……';
     hint.style.color = '';
+
+    var formData = new FormData(composer);
+    if (typeof EventSource === 'undefined') {
+      // 浏览器不支持 SSE——直接走老的表单提交路径，不尝试流式。
+      composer.setAttribute('action', '{{ url_for("roundtable_run") }}');
+      HTMLFormElement.prototype.submit.call(composer);
+      return;
+    }
+
+    fetch('{{ url_for("roundtable_run_stream") }}', { method: 'POST', body: formData })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (data) { throw new Error(data.error || '提交失败'); });
+        return r.json();
+      })
+      .then(function (data) {
+        startStreaming(data.conversation_id, question, checked);
+      })
+      .catch(function (err) {
+        hint.textContent = err.message || '提交失败，请重试';
+        hint.style.color = '#a35b00';
+        sendBtn.disabled = false;
+        sendBtn.textContent = ORIGINAL_SEND_LABEL;
+      });
   });
 
-  // 讨论在后台线程执行，本页面提交后会立刻收到"进行中"状态（见 #pendingTurn）。
-  // 轮询 /roundtable/status，跑完了自动刷新页面展示结果——不用用户自己猜要不要刷新。
+  // 讨论在后台线程执行，本页面提交后会立刻收到"进行中"状态（见 #pendingTurn）——这是页面
+  // 刚加载时如果发现有一场讨论正在进行（比如中途刷新了页面）的兜底展示，走轮询而不是 SSE，
+  // 因为 SSE 连接是在提交那一刻建立的，刷新后就断了，重新接上流式片段没有意义，直接轮询
+  // 等结果、跑完整页刷新即可。
   if (document.getElementById('pendingTurn')) {
     sendBtn.disabled = true;
     sendBtn.textContent = '有一场讨论正在进行中…';
-    var poll = setInterval(function () {
-      fetch('{{ url_for("roundtable_status") }}')
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          if (!data.running) {
-            clearInterval(poll);
-            window.location.reload();
-          }
-        })
-        .catch(function () { /* 网络抖动，下一次轮询再试 */ });
-    }, 3000);
+    fallbackToPolling();
   }
 
   // "调用助手 agent 直接撰写草稿"同样是后台线程执行，同样的轮询套路。

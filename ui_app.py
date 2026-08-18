@@ -18,6 +18,7 @@ inbox/dispatcher/自动化通道这些"助手·执行工具"相关的运维操�
 """
 import json
 import logging
+import queue
 import re
 import secrets
 import subprocess
@@ -26,7 +27,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 
 import dispatcher
 import i18n
@@ -76,6 +77,31 @@ def _pop_last_error() -> str | None:
     with _state_lock:
         message, _last_run_error = _last_run_error, None
         return message
+
+
+# 2026-08-18 新增：流式渲染——跟老的"提交+轮询整页刷新"路径完全独立并存，不是替换关系。
+# 前端优先走这条（composer 提交 -> /roundtable/run-stream 拿 conversation_id -> 建立
+# SSE 连接实时渲染），SSE 连接失败/浏览器不支持时自动退化回老的轮询路径，两条路径共用
+# 同一个 _roundtable_lock，不会互相冲突或重复扣费。
+_stream_queues_lock = threading.Lock()
+_stream_queues: dict[str, "queue.Queue"] = {}
+
+
+def _create_stream_queue(conversation_id: str) -> "queue.Queue":
+    q: "queue.Queue" = queue.Queue()
+    with _stream_queues_lock:
+        _stream_queues[conversation_id] = q
+    return q
+
+
+def _get_stream_queue(conversation_id: str) -> "queue.Queue | None":
+    with _stream_queues_lock:
+        return _stream_queues.get(conversation_id)
+
+
+def _remove_stream_queue(conversation_id: str) -> None:
+    with _stream_queues_lock:
+        _stream_queues.pop(conversation_id, None)
 
 
 # 2026-08-15 新增：圆桌讨论出会议纪要之后，直接调 ops-assistant 写头条+公众号草稿——
@@ -269,6 +295,7 @@ def render_chat(conversation_id: str | None = None, force_new: bool = False, **e
         draft_log=load_draft_log(),
         current_draft=_get_current_draft(),
         draft_error=draft_error,
+        agent_labels_json=json.dumps(i18n.AGENT_LABELS_ZH, ensure_ascii=False),
         **extra,
     )
 
@@ -373,6 +400,85 @@ def roundtable_run():
 def roundtable_status():
     """前端轮询用——讨论进行中时如实告知，跑完了就让前端自动刷新展示结果。"""
     return jsonify({"running": _get_current_run() is not None})
+
+
+@app.route("/roundtable/run-stream", methods=["POST"])
+def roundtable_run_stream():
+    """跟 /roundtable/run 逻辑基本一致（同样的校验、同样的锁、同样的后台线程执行），
+    区别只在于：会创建一个流式队列，Round 1/2/3 的每个 chunk 实时推进去，供前端 SSE
+    连接（/roundtable/stream/<id>）实时渲染。返回 JSON 而不是 redirect，因为这是给
+    JS fetch 用的，不是普通表单提交——普通表单提交走 /roundtable/run 那条老路径。
+    """
+    agent_names = request.form.getlist("agents")
+    question = request.form.get("question", "").strip()
+    conversation_id = request.form.get("conversation_id", "").strip() or None
+
+    if len(agent_names) < 2 or not question:
+        return jsonify({"error": "至少选 2 位专家，并填写讨论的问题。"}), 400
+
+    if not _roundtable_lock.acquire(blocking=False):
+        return jsonify({"error": "已经有一场圆桌讨论正在进行中，请等它结束再提交。"}), 409
+
+    if not conversation_id:
+        conversation_id = roundtable.create_conversation(agent_names, question)
+
+    stream_queue = _create_stream_queue(conversation_id)
+
+    _set_current_run({
+        "conversation_id": conversation_id,
+        "question": question,
+        "agents": agent_names,
+        "started_at": datetime.now().strftime("%H:%M:%S"),
+    })
+    logger.info(f"UI：触发圆桌讨论（流式）-> conversation_id={conversation_id}, question={question!r}, agents={agent_names}")
+
+    def _worker():
+        try:
+            roundtable.run_roundtable(agent_names, question, conversation_id=conversation_id, stream_queue=stream_queue)
+        except roundtable.RoundtableError as exc:
+            logger.warning(f"UI：圆桌讨论参数错误：{exc}")
+            _set_last_error(str(exc))
+            stream_queue.put({"type": "error", "message": str(exc)})
+        except Exception:
+            logger.exception("UI：圆桌讨论执行失败")
+            _set_last_error("圆桌讨论执行失败，详情看 logs/super_brain.log")
+            stream_queue.put({"type": "error", "message": "执行失败，详情看 logs/super_brain.log"})
+        finally:
+            _set_current_run(None)
+            _roundtable_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return jsonify({"conversation_id": conversation_id})
+
+
+@app.route("/roundtable/stream/<conversation_id>")
+def roundtable_stream(conversation_id):
+    """SSE 端点——前端建立连接后持续收到 Round 1/2/3 的实时 chunk，直到收到
+    run_done/error 类型的消息为止。单条消息最多等 3 分钟，防止某个环节卡死导致
+    连接永远挂着不释放。
+    """
+    def generate():
+        q = _get_stream_queue(conversation_id)
+        if q is None:
+            yield f"data: {json.dumps({'type': 'error', 'message': '没有找到这场讨论的流，可能已经结束或从没开始过'}, ensure_ascii=False)}\n\n"
+            return
+        try:
+            while True:
+                try:
+                    msg = q.get(timeout=180)
+                except queue.Empty:
+                    yield f"data: {json.dumps({'type': 'error', 'message': '等待超时'}, ensure_ascii=False)}\n\n"
+                    break
+                yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+                if msg.get("type") in ("run_done", "error"):
+                    break
+        finally:
+            _remove_stream_queue(conversation_id)
+
+    return Response(
+        generate(), mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.route("/minutes/draft", methods=["POST"])

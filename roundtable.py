@@ -31,7 +31,9 @@ from dispatcher import (
     DEEPSEEK_CONFIG_PATH,
     SUPER_BRAIN,
     call_deepseek,
+    call_deepseek_stream,
     call_deepseek_with_tools,
+    call_deepseek_with_tools_stream,
     load_agent_registry,
     load_private_context,
     load_tavily_api_key,
@@ -138,20 +140,35 @@ def append_lessons(agent_name: str, question: str, reflection: str) -> None:
 
 
 def _run_round(agent_names: list[str], registry: dict, contexts: dict[str, str], api_key: str,
-               build_system_prompt, user_prompt: str, round_label: str, call_fn=call_deepseek) -> dict[str, str]:
+               build_system_prompt, user_prompt: str, round_label: str, call_fn=call_deepseek,
+               stream_queue=None, round_num: int | None = None) -> dict[str, str]:
+    """stream_queue 为 None 时是原来的阻塞模式——call_fn 是普通函数，等全部专家都返回才结束。
+    stream_queue 不为 None 时，call_fn 必须是流式生成器函数（call_deepseek_stream /
+    call_deepseek_with_tools_stream），每个专家在自己的线程里边生成边把 {agent, round, type,
+    delta} 推进队列，前端可以实时渲染；专家完成时额外推一条 type=agent_done。
+    """
     logger.info(f"{round_label}：并行唤起 {len(agent_names)} 位专家")
     results: dict[str, str] = {}
+
+    def _run_one_streaming(name: str) -> str:
+        full_parts: list[str] = []
+        full_content = ""
+        for event in call_fn(build_system_prompt(name), user_prompt, api_key, max_tokens=8000):
+            if event["type"] in ("reasoning", "content"):
+                stream_queue.put({"agent": name, "round": round_num, "type": event["type"], "delta": event["delta"]})
+                if event["type"] == "content":
+                    full_parts.append(event["delta"])
+            elif event["type"] == "done":
+                full_content = event["content"]
+        stream_queue.put({"agent": name, "round": round_num, "type": "agent_done"})
+        return full_content or "".join(full_parts)
+
+    submit_fn = _run_one_streaming if stream_queue is not None else (
+        lambda name: call_fn(build_system_prompt(name), user_prompt, api_key, max_tokens=8000)
+    )
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agent_names)) as pool:
-        futures = {
-            pool.submit(
-                call_fn,
-                build_system_prompt(name),
-                user_prompt,
-                api_key,
-                max_tokens=8000,
-            ): name
-            for name in agent_names
-        }
+        futures = {pool.submit(submit_fn, name): name for name in agent_names}
         for future in concurrent.futures.as_completed(futures):
             name = futures[future]
             try:
@@ -160,6 +177,8 @@ def _run_round(agent_names: list[str], registry: dict, contexts: dict[str, str],
             except Exception:
                 logger.exception(f"{round_label} 失败：{name}，这位专家本轮缺席")
                 results[name] = "(本轮调用失败，这位专家缺席)"
+                if stream_queue is not None:
+                    stream_queue.put({"agent": name, "round": round_num, "type": "agent_error"})
     return results
 
 
@@ -337,10 +356,15 @@ def load_all_conversations() -> list[dict]:
     return conversations
 
 
-def run_roundtable(agent_names: list[str], question: str, conversation_id: str | None = None) -> dict:
+def run_roundtable(agent_names: list[str], question: str, conversation_id: str | None = None,
+                    stream_queue=None) -> dict:
     """conversation_id 为 None 时新建一个会话；传入已有会话 id 时，是在这个会话里追问——
     追问会带上这个会话之前的历史脉络（见 _round1_system_prompt 的 prior_turns），不是
     每次提问都从零开始、互相无关的独立记录。
+
+    stream_queue 不为 None 时，Round 1/2/3 全部走流式路径，每个专家的思考/正文逐块推进
+    队列，供 UI 实时渲染；不传就是原来的阻塞模式，行为完全不变（CLI 用法、以前的调用方
+    都不受影响）。
     """
     registry = load_agent_registry()
 
@@ -370,6 +394,10 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
     web_search_enabled = bool(tavily_api_key)
     logger.info(f"web_search 工具：{'已启用（Tavily key 已配置）' if web_search_enabled else '未启用（没配置 TAVILY_API_KEY，自动降级）'}")
 
+    round1_call_fn = partial(
+        call_deepseek_with_tools_stream if stream_queue is not None else call_deepseek_with_tools,
+        tavily_api_key=tavily_api_key,
+    )
     round1 = _run_round(
         agent_names, registry, contexts, api_key,
         build_system_prompt=lambda name: _round1_system_prompt(
@@ -377,8 +405,11 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
         ),
         user_prompt=question,
         round_label="Round 1",
-        call_fn=partial(call_deepseek_with_tools, tavily_api_key=tavily_api_key),
+        call_fn=round1_call_fn,
+        stream_queue=stream_queue,
+        round_num=1,
     )
+    round2_call_fn = call_deepseek_stream if stream_queue is not None else call_deepseek
     round2 = _run_round(
         agent_names, registry, contexts, api_key,
         build_system_prompt=lambda name: _round2_system_prompt(
@@ -386,10 +417,14 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
         ),
         user_prompt="请给出交叉校验意见。",
         round_label="Round 2",
+        call_fn=round2_call_fn,
+        stream_queue=stream_queue,
+        round_num=2,
     )
 
     minutes_path = write_meeting_minutes(question, agent_names, round1, round2, api_key)
 
+    round3_call_fn = call_deepseek_stream if stream_queue is not None else call_deepseek
     round3 = _run_round(
         agent_names, registry, contexts, api_key,
         build_system_prompt=lambda name: _round3_system_prompt(
@@ -397,6 +432,9 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
         ),
         user_prompt="请做自我复盘。",
         round_label="Round 3（自我反思）",
+        call_fn=round3_call_fn,
+        stream_queue=stream_queue,
+        round_num=3,
     )
     for name, reflection in round3.items():
         try:
@@ -414,6 +452,8 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
     append_turn(conversation_id, turn)
+    if stream_queue is not None:
+        stream_queue.put({"type": "run_done", "minutes_path": turn["minutes_path"]})
     return {**turn, "conversation_id": conversation_id}
 
 
