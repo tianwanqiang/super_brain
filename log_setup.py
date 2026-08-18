@@ -19,7 +19,11 @@ LOG_FILE = LOG_DIR / "super_brain.log"
 _configured = False
 
 
-def configure_logging(level: int = logging.INFO) -> None:
+def configure_logging(console_level: int = logging.INFO, file_level: int = logging.DEBUG) -> None:
+    """文件日志和终端日志级别分开——文件要能拿来做 token 用量/错误/完整对话内容的事后分析，
+    所以文件用 DEBUG（记录一切细节，包括完整 prompt/response）；终端只给人看，保持 INFO，
+    不然每次真实调用的完整对话内容都刷屏，没法用。
+    """
     global _configured
     if _configured:
         return
@@ -33,12 +37,14 @@ def configure_logging(level: int = logging.INFO) -> None:
 
     file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
     file_handler.setFormatter(formatter)
+    file_handler.setLevel(file_level)
 
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(logging.Formatter("%(message)s"))  # 终端保持简洁，不带时间戳前缀
+    console_handler.setLevel(console_level)
 
     root = logging.getLogger("super_brain")
-    root.setLevel(level)
+    root.setLevel(min(console_level, file_level))  # 根 logger 的门槛不能比任一 handler 更严，否则 DEBUG 记录到不了文件 handler
     root.addHandler(file_handler)
     root.addHandler(console_handler)
     root.propagate = False

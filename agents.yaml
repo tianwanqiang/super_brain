@@ -50,6 +50,8 @@ agents:
       - "Avinash Dixit & Barry Nalebuff《策略思维》Thinking Strategically"
       - "Michael Porter《竞争战略》Competitive Strategy"
       - "《孙子兵法》原典 + 宫玉振《善战者说》"
+      - "Richard Rumelt《好战略/坏战略》Good Strategy Bad Strategy"
+      - "W. Chan Kim & Renée Mauborgne《蓝海战略》Blue Ocean Strategy"
     output_requires_citation: true
 
   - name: finance
@@ -60,6 +62,8 @@ agents:
       - "硅谷创业/精益创业方法论体系（CAC/LTV 单位经济学框架）"
       - "财务报表三表联动分析法（资产负债表/利润表/现金流量表）"
       - "薛兆丰《经济学讲义》"
+      - "Eric Ries《精益创业》The Lean Startup"
+      - "Peter Thiel《从0到1》Zero to One"
     output_requires_citation: true
 
   - name: marketing
@@ -70,6 +74,8 @@ agents:
       - "Al Ries & Jack Trout《定位》Positioning、《商战》Marketing Warfare"
       - "Jonah Berger《疯传》/ 格拉德威尔《引爆点》"
       - "Daniel Kahneman《思考，快与慢》Thinking, Fast and Slow"
+      - "Robert Cialdini《影响力》Influence"
+      - "Nir Eyal《上瘾》Hooked"
     output_requires_citation: true
 
   - name: legal
@@ -79,6 +85,8 @@ agents:
     sources:
       - "中国《公司法》一人有限责任公司相关条款"
       - "一人公司常见合规风险公开案例整理（非执业律师意见）"
+      - "《广告法》实务解读（内容合规专项）"
+      - "《个人信息保护法》PIPL 实务（数据合规专项）"
     output_requires_citation: true
     disclaimer_required: true
 

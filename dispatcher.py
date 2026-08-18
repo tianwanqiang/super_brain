@@ -188,8 +188,8 @@ def build_system_prompt(agent_name: str, registry: dict[str, dict], private_cont
 
 
 def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
-                   model: str = "deepseek-chat", base_url: str = "https://api.deepseek.com/v1",
-                   max_tokens: int = 1500) -> str:
+                   model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
+                   max_tokens: int = 8000) -> str:
     body = json.dumps({
         "model": model,
         "max_tokens": max_tokens,
@@ -204,9 +204,248 @@ def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
+    logger.debug(
+        f"DeepSeek 请求 -> model={model}, max_tokens={max_tokens}\n"
+        f"--- system_prompt ---\n{system_prompt}\n--- user_prompt ---\n{user_prompt}"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        logger.error(f"DeepSeek 调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        raise
+
+    usage = data.get("usage", {})
+    choice = data["choices"][0]
+    finish_reason = choice.get("finish_reason")
+    message = choice["message"]
+    content = message["content"].strip()
+    reasoning_content = message.get("reasoning_content", "")
+
+    logger.info(
+        f"DeepSeek 调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"prompt_tokens={usage.get('prompt_tokens')}, "
+        f"reasoning_tokens={usage.get('completion_tokens_details', {}).get('reasoning_tokens', 0)}, "
+        f"completion_tokens={usage.get('completion_tokens')}, total_tokens={usage.get('total_tokens')}"
+    )
+    if not content:
+        logger.warning(
+            f"DeepSeek 返回的 content 是空的！finish_reason={finish_reason}，很可能是 max_tokens "
+            f"不够、被截断在思考阶段。reasoning_content 摘要：{reasoning_content[:200]!r}"
+        )
+    logger.debug(f"DeepSeek 响应 content：\n{content}")
+
+    return content
+
+
+def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
+                          model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
+                          max_tokens: int = 8000):
+    """流式版本——逐块 yield {"type": "reasoning"|"content", "delta": str}，供 UI 实时渲染用。
+    跟 call_deepseek() 是两条独立路径，不影响不需要实时展示的场景（lessons.md 写入、内部起草
+    建议等）继续用阻塞版本。
+
+    SSE 格式：每行 "data: {...}"，chunk 里 choices[0].delta 可能带 content 和/或
+    reasoning_content（思考模型才有后者），最后一行是 "data: [DONE]"。
+    """
+    body = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=body,
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    logger.debug(
+        f"DeepSeek 流式请求 -> model={model}, max_tokens={max_tokens}\n"
+        f"--- system_prompt ---\n{system_prompt}\n--- user_prompt ---\n{user_prompt}"
+    )
+
+    full_content_parts: list[str] = []
+    full_reasoning_parts: list[str] = []
+    finish_reason = None
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[len("data:"):].strip()
+                if payload == "[DONE]":
+                    break
+                chunk = json.loads(payload)
+                choice = chunk["choices"][0]
+                delta = choice.get("delta", {})
+                finish_reason = choice.get("finish_reason") or finish_reason
+
+                reasoning_delta = delta.get("reasoning_content")
+                if reasoning_delta:
+                    full_reasoning_parts.append(reasoning_delta)
+                    yield {"type": "reasoning", "delta": reasoning_delta}
+
+                content_delta = delta.get("content")
+                if content_delta:
+                    full_content_parts.append(content_delta)
+                    yield {"type": "content", "delta": content_delta}
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        logger.error(f"DeepSeek 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        raise
+
+    full_content = "".join(full_content_parts).strip()
+    logger.info(
+        f"DeepSeek 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"content_chars={len(full_content)}, reasoning_chars={len(''.join(full_reasoning_parts))}"
+    )
+    if not full_content:
+        logger.warning(
+            f"DeepSeek 流式返回的 content 是空的！finish_reason={finish_reason}，"
+            f"很可能是 max_tokens 不够、被截断在思考阶段。"
+        )
+    yield {"type": "done", "content": full_content}
+
+
+TAVILY_CONFIG_PATH = SUPER_BRAIN / "config.json"
+
+WEB_SEARCH_TOOL_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "搜索互联网获取真实、最新的外部信息（比如具体的市场数据、竞品动态、法规条文原文）。"
+            "只在需要你已有知识框架里没有、且必须是最新/具体事实的信息时调用，不要用来查你已经"
+            "知道的常识或者知识框架里已经覆盖的规则。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词，用简洁的查询词，不要用完整句子"},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+def load_tavily_api_key() -> str | None:
+    """没配置就返回 None——调用方应该优雅降级（不给模型 web_search 工具），不是报错。"""
+    if not TAVILY_CONFIG_PATH.exists():
+        return None
+    try:
+        config = json.loads(TAVILY_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    key = config.get("TAVILY_API_KEY")
+    return key or None
+
+
+def tavily_search(query: str, api_key: str, max_results: int = 5) -> str:
+    """调 Tavily API 搜索，把结果整理成一段可以直接作为工具执行结果喂回给模型的文本。"""
+    body = json.dumps({
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))
-    return data["choices"][0]["message"]["content"].strip()
+    results = data.get("results", [])
+    if not results:
+        return "没有搜到相关结果。"
+    lines = [
+        f"- {r.get('title', '')}：{r.get('content', '')[:300]}（来源：{r.get('url', '')}）"
+        for r in results
+    ]
+    return "\n".join(lines)
+
+
+def call_deepseek_with_tools(system_prompt: str, user_prompt: str, api_key: str,
+                              tavily_api_key: str | None = None,
+                              model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
+                              max_tokens: int = 8000, max_tool_rounds: int = 3) -> str:
+    """带工具调用循环的版本——tavily_api_key 为空时不给模型 web_search 工具，退化成普通调用，
+    不报错。有 key 时，模型可以主动请求搜索，真实执行后把结果传回去继续对话，最多循环
+    max_tool_rounds 次防止死循环（模型反复要求搜索、迟迟不给最终答案）。
+    """
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    tools = [WEB_SEARCH_TOOL_SCHEMA] if tavily_api_key else None
+    message: dict = {}
+
+    for round_num in range(max_tool_rounds + 1):
+        body: dict = {"model": model, "max_tokens": max_tokens, "messages": messages}
+        if tools:
+            body["tools"] = tools
+        req = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            logger.error(f"DeepSeek 工具调用失败：HTTP {exc.code}，响应体：{error_body}")
+            raise
+
+        choice = data["choices"][0]
+        message = choice["message"]
+        usage = data.get("usage", {})
+        tool_calls = message.get("tool_calls") or []
+        logger.info(
+            f"DeepSeek 工具调用轮次 {round_num} -> finish_reason={choice.get('finish_reason')}, "
+            f"tool_calls={len(tool_calls)}, total_tokens={usage.get('total_tokens')}"
+        )
+
+        if not tool_calls:
+            content = (message.get("content") or "").strip()
+            if not content:
+                logger.warning("DeepSeek 工具调用循环结束但 content 为空，可能被截断")
+            return content
+
+        messages.append(message)
+        for call in tool_calls:
+            func_name = call["function"]["name"]
+            try:
+                args = json.loads(call["function"]["arguments"])
+            except json.JSONDecodeError:
+                args = {}
+            if func_name == "web_search" and tavily_api_key:
+                query = args.get("query", "")
+                logger.info(f"专家发起 web_search：{query!r}")
+                try:
+                    result_text = tavily_search(query, tavily_api_key)
+                except Exception as exc:
+                    result_text = f"搜索失败：{exc}"
+                    logger.exception("Tavily 搜索失败")
+            else:
+                result_text = "这个工具当前不可用（未配置搜索 API Key）。"
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": result_text,
+            })
+
+    logger.warning(f"工具调用循环达到最大轮数 {max_tool_rounds}，强制返回最后一次的内容")
+    return (message.get("content") or "").strip()
 
 
 # ---------- 真实执行器（有 executor 字段的 agent 走这里，不再只是起草建议） ----------
@@ -219,16 +458,25 @@ def read_opc_content(date: str) -> str | None:
 
 
 def generate_wechat_html(opc_content: str, api_key: str) -> tuple[str, str]:
-    """调 DeepSeek 把 opc 笔记转成公众号标题 + 带内联 style 的 HTML 正文（微信不支持外部 CSS）。"""
+    """调 DeepSeek 把 opc 笔记转成公众号标题 + 带内联 style 的 HTML 正文（微信不支持外部 CSS）。
+    先接上 writer 的运营写作技能框架（取舍原则、具体场景优先、避免自证式空话这几条），
+    再叠加公众号这个平台的具体格式规则——不是两套互相独立的写作哲学。
+    """
+    registry = load_agent_registry()
+    writer_context = load_private_context("writer", registry)
     system_prompt = (
-        "你是公众号排版助手。把用户给的 Markdown 笔记转换成可以直接提交给微信公众号草稿接口的 HTML。\n"
-        "规则：只能用 <h3>/<p>/<blockquote>/<strong>/<code> 这几个标签，每个标签都必须带内联 "
-        "style 属性（微信不支持 <style> 块或外部 CSS），字号 15-16px、行高 1.8-1.9，正文颜色 "
-        "#2e3a46，标题/重点用 #b8681e 做分隔线或强调色。\n"
+        f"下面是通用的运营写作技能框架，写之前先参照这里的取舍原则（具体场景优先、避免自证式"
+        f"空话、读者预期对齐）：\n\n{writer_context}\n\n"
+        "你现在具体要做的是公众号排版：把用户给的 Markdown 笔记转换成可以直接提交给微信公众号"
+        "草稿接口的 HTML。\n"
+        "格式规则：只能用 <h3>/<p>/<blockquote>/<strong>/<code> 这几个标签，每个标签都必须带"
+        "内联 style 属性（微信不支持 <style> 块或外部 CSS），字号 15-16px、行高 1.8-1.9，正文"
+        "颜色 #2e3a46，标题/重点用 #b8681e 做分隔线或强调色。公众号读者是主动点开、愿意深度"
+        "阅读，可以有更完整的叙事弧线，不需要每段都抓眼球。\n"
         "输出格式：第一行是文章标题（不要任何前缀符号），空一行，然后是完整 HTML 正文。"
         "不要输出除此之外的任何解释文字。"
     )
-    raw = call_deepseek(system_prompt, opc_content, api_key, max_tokens=4000)
+    raw = call_deepseek(system_prompt, opc_content, api_key, max_tokens=12000)
     parts = raw.strip().split("\n", 2)
     title = parts[0].strip().lstrip("#").strip()
     html = parts[-1].strip() if len(parts) > 1 else ""
@@ -270,12 +518,16 @@ def execute_ops_assistant_full(date: str, api_key: str) -> dict:
 
 
 def generate_toutiao_article(content: str, api_key: str) -> str:
-    """跟 toutiao-agent 的 Generate-ToutiaoDraft.ps1 用同一套 system prompt——只是输入源从
-    固定的 opc_{date}.md 换成任意内容（这里是会议纪要），保持同样的候选标题/正文/标签/分类
-    结构，不重新发明改写逻辑。
+    """跟 toutiao-agent 的 Generate-ToutiaoDraft.ps1 用同一套核心改写逻辑，输入源从固定的
+    opc_{date}.md 换成任意内容（这里是会议纪要）。先接上 writer 的运营写作技能框架（同一套
+    取舍原则），再叠加头条这个平台的具体格式规则。
     """
+    registry = load_agent_registry()
+    writer_context = load_private_context("writer", registry)
     system_prompt = (
-        "你是一名资深今日头条（头条号）内容运营，负责把工作素材改写成适合头条号发布的图文文章。\n\n"
+        f"下面是通用的运营写作技能框架，写之前先参照这里的取舍原则（具体场景优先、避免自证式"
+        f"空话、读者预期对齐）：\n\n{writer_context}\n\n"
+        "你现在具体要做的是把工作素材改写成适合头条号发布的图文文章。\n\n"
         "头条读者和平台特点：\n"
         "- 标题要直白、有信息增量，避免\"震惊体\"和标题党，但要有一个清晰的钩子（数字/对比/反常识/疑问）\n"
         "- 正文段落要短（2-4行一段），信息密度高，少用书面语和空话\n"
@@ -290,7 +542,7 @@ def generate_toutiao_article(content: str, api_key: str) -> str:
         "## 建议标签\n3-5 个适合头条号的标签，逗号分隔。\n\n"
         "## 建议分类\n给出一个最贴合的头条号内容分类（如：职场、科技、创业、AI、数码等）。"
     )
-    return call_deepseek(system_prompt, content, api_key, max_tokens=4000)
+    return call_deepseek(system_prompt, content, api_key, max_tokens=12000)
 
 
 def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:

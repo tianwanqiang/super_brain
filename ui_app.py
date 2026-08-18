@@ -234,8 +234,8 @@ def persist_draft_log(minutes_path: str, result: dict) -> None:
     logger.info(f"UI：草稿生成记录已落盘：{out_path}")
 
 
-def render_chat(**extra):
-    """主界面：圆桌讨论聊天窗口。"""
+def render_chat(conversation_id: str | None = None, force_new: bool = False, **extra):
+    """主界面：圆桌讨论聊天窗口，以会话为单位管理——不再是所有讨论堆在一条流水账里。"""
     registry = dispatcher.load_agent_registry()
     roundtable_agents, _, _ = categorize_agents(registry)
     config = load_config_safe()
@@ -244,10 +244,25 @@ def render_chat(**extra):
     error = session.pop("roundtable_error", None) or _pop_last_error()
     draft_error = session.pop("draft_error", None) or _pop_draft_error()
 
+    conversations = roundtable.load_all_conversations()
+
+    active_conversation = None
+    active_id = conversation_id
+    if not force_new:
+        if active_id:
+            active_conversation = next((c for c in conversations if c["id"] == active_id), None)
+        elif conversations:
+            active_conversation = conversations[0]
+            active_id = active_conversation["id"]
+    if active_conversation is None:
+        active_id = None  # 新建状态 / 会话不存在，都归一成"没有选中会话"
+
     return render_template(
         "index.html",
         roundtable_agents=roundtable_agents,
-        history=roundtable.load_roundtable_history(),
+        conversations=conversations,
+        active_conversation=active_conversation,
+        active_conversation_id=active_id,
         meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
         roundtable_error=error,
         current_run=_get_current_run(),
@@ -289,7 +304,9 @@ def render_admin(**extra):
 
 @app.route("/")
 def index():
-    return render_chat()
+    conversation_id = request.args.get("conversation")
+    force_new = request.args.get("new") == "1"
+    return render_chat(conversation_id=conversation_id, force_new=force_new)
 
 
 @app.route("/roundtable/run", methods=["POST"])
@@ -303,13 +320,16 @@ def roundtable_run():
     """
     agent_names = request.form.getlist("agents")
     question = request.form.get("question", "").strip()
+    conversation_id = request.form.get("conversation_id", "").strip() or None
+    back_to = (lambda: redirect(url_for("index", conversation=conversation_id))
+               if conversation_id else redirect(url_for("index")))
 
     if len(agent_names) < 2 or not question:
         logger.warning(
             f"UI：圆桌讨论表单校验失败（至少选 2 位专家 + 填问题），agents={agent_names}, question={question!r}"
         )
         session["roundtable_error"] = "至少选 2 位专家，并填写讨论的问题。"
-        return redirect(url_for("index"))
+        return back_to()
 
     if not _roundtable_lock.acquire(blocking=False):
         logger.warning(
@@ -317,18 +337,24 @@ def roundtable_run():
             f"本次提交的问题：{question!r}"
         )
         session["roundtable_error"] = "已经有一场圆桌讨论正在进行中，请等它结束（通常 15-40 秒）再提交，不用重复点击。"
-        return redirect(url_for("index"))
+        return back_to()
+
+    # 新会话场景：同步先建好会话（本地文件 IO，很快，不涉及网络），这样能立刻拿到
+    # conversation_id 用于跳转；已有会话的追问场景直接复用传进来的 id。
+    if not conversation_id:
+        conversation_id = roundtable.create_conversation(agent_names, question)
 
     _set_current_run({
+        "conversation_id": conversation_id,
         "question": question,
         "agents": agent_names,
         "started_at": datetime.now().strftime("%H:%M:%S"),
     })
-    logger.info(f"UI：触发圆桌讨论（后台线程）-> question={question!r}, agents={agent_names}")
+    logger.info(f"UI：触发圆桌讨论（后台线程）-> conversation_id={conversation_id}, question={question!r}, agents={agent_names}")
 
     def _worker():
         try:
-            roundtable.run_roundtable(agent_names, question)
+            roundtable.run_roundtable(agent_names, question, conversation_id=conversation_id)
         except roundtable.RoundtableError as exc:
             logger.warning(f"UI：圆桌讨论参数错误：{exc}")
             _set_last_error(str(exc))
@@ -340,7 +366,7 @@ def roundtable_run():
             _roundtable_lock.release()
 
     threading.Thread(target=_worker, daemon=True).start()
-    return redirect(url_for("index"))
+    return redirect(url_for("index", conversation=conversation_id))
 
 
 @app.route("/roundtable/status")
@@ -394,6 +420,21 @@ def minutes_draft():
 @app.route("/minutes/draft/status")
 def minutes_draft_status():
     return jsonify({"running": _get_current_draft() is not None})
+
+
+@app.route("/conversations/<conversation_id>/delete", methods=["POST"])
+def conversation_delete(conversation_id):
+    """删除一个会话——不可恢复，前端已经有确认弹窗兜底，这里不再二次确认。"""
+    if _get_current_run() and _get_current_run().get("conversation_id") == conversation_id:
+        session["roundtable_error"] = "这个会话正在进行讨论，不能删除，请等它结束。"
+        return redirect(url_for("index", conversation=conversation_id))
+
+    ok = roundtable.delete_conversation(conversation_id)
+    if not ok:
+        logger.warning(f"UI：尝试删除不存在的会话：{conversation_id}")
+    else:
+        logger.info(f"UI：会话已删除：{conversation_id}")
+    return redirect(url_for("index"))
 
 
 @app.route("/admin")
