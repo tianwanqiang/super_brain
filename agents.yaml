@@ -101,6 +101,11 @@ agents:
     description: 把圆桌讨论的原始记录写成正式会议纪要（{date_time}_{title}.md），对话内 @ 触发，不经过 inbox
     knowledge_path: agents/writer/private.md
 
+  - name: video-prompt
+    type: execution
+    description: 把中文描述转成视频生成大模型的提示词（目前专精 Seedance 2.0），对话内 @ 触发，不经过 inbox
+    knowledge_path: agents/video-prompt/private.md
+
   - name: ops-assistant
     type: execution
     description: 读取当天的 opc 内容 + 会议纪要目录里的新文件，分发到头条和公众号生成待审阅草稿；默认两个平台都发，不自动发布/群发
