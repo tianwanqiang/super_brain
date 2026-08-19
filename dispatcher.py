@@ -187,29 +187,17 @@ def build_system_prompt(agent_name: str, registry: dict[str, dict], private_cont
     return "\n\n".join(p for p in parts if p)
 
 
-def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
-                   model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
-                   max_tokens: int = 8000) -> str:
-    body = json.dumps({
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    }).encode("utf-8")
+def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url: str, max_tokens: int) -> str:
+    body = json.dumps({"model": model, "max_tokens": max_tokens, "messages": messages}).encode("utf-8")
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
         data=body,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    logger.debug(
-        f"DeepSeek 请求 -> model={model}, max_tokens={max_tokens}\n"
-        f"--- system_prompt ---\n{system_prompt}\n--- user_prompt ---\n{user_prompt}"
-    )
+    logger.debug(f"DeepSeek 请求 -> model={model}, max_tokens={max_tokens}, messages数={len(messages)}")
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=90) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
@@ -235,8 +223,25 @@ def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
             f"不够、被截断在思考阶段。reasoning_content 摘要：{reasoning_content[:200]!r}"
         )
     logger.debug(f"DeepSeek 响应 content：\n{content}")
-
     return content
+
+
+def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
+                   model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
+                   max_tokens: int = 8000) -> str:
+    return _call_deepseek_core(
+        [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        api_key, model, base_url, max_tokens,
+    )
+
+
+def call_deepseek_messages(messages: list[dict], api_key: str,
+                            model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
+                            max_tokens: int = 8000) -> str:
+    """跟 call_deepseek 逻辑一致，只是直接接受完整的 messages 数组——多轮对话场景用
+    （比如 video-prompt 的迭代修改），不是每次都只有一组 system+user。
+    """
+    return _call_deepseek_core(messages, api_key, model, base_url, max_tokens)
 
 
 def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,

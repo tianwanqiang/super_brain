@@ -79,6 +79,10 @@
   <button type="submit">保存到 config.json</button>
 </form>
 
+<h2>AIGC 提示词专家</h2>
+<p>把中文描述转成 Seedance 2.0 视频生成提示词，支持多轮追问迭代修改，独立的对话记录，
+不占主界面。<a href="{{ url_for('video_prompt_page') }}" style="color:#34508a; font-weight:600;">打开对话 →</a></p>
+
 <h2>自动化通道（仅"助手·执行工具"类，走 inbox + dispatcher.py）</h2>
 <p style="font-size:12.5px; color:#888;">
   只列出真的有 <code>executor</code>、走这条路会真实执行的 agent。<code>ship</code>/<code>coordinator</code>

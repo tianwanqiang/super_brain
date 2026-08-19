@@ -33,6 +33,7 @@ import dispatcher
 import i18n
 import publishers
 import roundtable
+import video_prompt
 from log_setup import configure_logging
 
 configure_logging()
@@ -541,6 +542,120 @@ def conversation_delete(conversation_id):
     else:
         logger.info(f"UI：会话已删除：{conversation_id}")
     return redirect(url_for("index"))
+
+
+# 2026-08-18 新增：video-prompt 是"正式角色"——独立的多轮对话，走真实 DeepSeek 程序化
+# 调用（不依赖 Claude Code 在场），admin 页面新增一块功能区，不占主界面。同样的教训、
+# 同样的模式：后台线程执行 + 锁防重复点击 + 轮询状态，不会重蹈"同步阻塞卡死服务器"的错。
+_video_prompt_lock = threading.Lock()
+_current_video_prompt_run: dict | None = None  # {"conversation_id", "started_at"}
+_last_video_prompt_error: str | None = None
+
+
+def _set_current_video_prompt_run(value: dict | None) -> None:
+    global _current_video_prompt_run
+    with _state_lock:
+        _current_video_prompt_run = value
+
+
+def _get_current_video_prompt_run() -> dict | None:
+    with _state_lock:
+        return _current_video_prompt_run
+
+
+def _set_video_prompt_error(message: str | None) -> None:
+    global _last_video_prompt_error
+    with _state_lock:
+        _last_video_prompt_error = message
+
+
+def _pop_video_prompt_error() -> str | None:
+    global _last_video_prompt_error
+    with _state_lock:
+        message, _last_video_prompt_error = _last_video_prompt_error, None
+        return message
+
+
+def render_video_prompt(conversation_id: str | None = None, **extra):
+    conversations = video_prompt.load_all_conversations()
+    active = None
+    active_id = conversation_id
+    if active_id:
+        active = next((c for c in conversations if c["id"] == active_id), None)
+    elif conversations:
+        active = conversations[0]
+        active_id = active["id"]
+    if active is None:
+        active_id = None
+
+    error = session.pop("video_prompt_error", None) or _pop_video_prompt_error()
+
+    return render_template(
+        "video_prompt.html",
+        conversations=conversations,
+        active_conversation=active,
+        active_conversation_id=active_id,
+        current_run=_get_current_video_prompt_run(),
+        video_prompt_error=error,
+        **extra,
+    )
+
+
+@app.route("/video-prompt")
+def video_prompt_page():
+    conversation_id = request.args.get("conversation") or None
+    return render_video_prompt(conversation_id=conversation_id)
+
+
+@app.route("/video-prompt/send", methods=["POST"])
+def video_prompt_send():
+    message = request.form.get("message", "").strip()
+    conversation_id = request.form.get("conversation_id", "").strip() or None
+
+    if not message:
+        session["video_prompt_error"] = "请填写要生成/修改的描述。"
+        return redirect(url_for("video_prompt_page", conversation=conversation_id))
+
+    if not _video_prompt_lock.acquire(blocking=False):
+        logger.warning(f"UI：video-prompt 请求被拒绝——已有一次生成正在进行中")
+        session["video_prompt_error"] = "已经有一次生成正在进行中，请等它结束再提交。"
+        return redirect(url_for("video_prompt_page", conversation=conversation_id))
+
+    if not conversation_id:
+        conversation_id = video_prompt.create_conversation(message)
+
+    _set_current_video_prompt_run({
+        "conversation_id": conversation_id,
+        "started_at": datetime.now().strftime("%H:%M:%S"),
+    })
+    logger.info(f"UI：触发 video-prompt 生成（后台线程）-> conversation_id={conversation_id}")
+
+    def _worker():
+        try:
+            video_prompt.send_message(conversation_id, message)
+        except video_prompt.VideoPromptError as exc:
+            logger.warning(f"UI：video-prompt 参数错误：{exc}")
+            _set_video_prompt_error(str(exc))
+        except Exception:
+            logger.exception("UI：video-prompt 生成失败")
+            _set_video_prompt_error("生成失败，详情看 logs/super_brain.log")
+        finally:
+            _set_current_video_prompt_run(None)
+            _video_prompt_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return redirect(url_for("video_prompt_page", conversation=conversation_id))
+
+
+@app.route("/video-prompt/status")
+def video_prompt_status():
+    return jsonify({"running": _get_current_video_prompt_run() is not None})
+
+
+@app.route("/video-prompt/<conversation_id>/delete", methods=["POST"])
+def video_prompt_delete(conversation_id):
+    video_prompt.delete_conversation(conversation_id)
+    return redirect(url_for("video_prompt_page"))
 
 
 @app.route("/admin")

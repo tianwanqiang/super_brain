@@ -23,3 +23,6 @@ agents/*/lessons.md
 
 # 会议纪要转草稿的执行记录（同样是运行时产物，供 UI 展示"已生成过草稿"用）
 draft_log/
+
+# video-prompt 的多轮对话记录，是个人数据不是代码
+video_prompt_conversations/
