@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>登录 · super_brain</title>
+<style>
+  :root { --bg: #f5f6f8; --surface: #fff; --text: #1b2028; --muted: #6b7280; --border: #e5e5e5; --accent: #34508a; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; font-family: -apple-system, "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    width: 320px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 32px 28px; text-align: center;
+  }
+  h1 { font-size: 16px; margin: 0 0 6px; }
+  .sub { font-size: 12px; color: var(--muted); margin-bottom: 22px; }
+  input[type=password] {
+    width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px;
+    margin-bottom: 12px; box-sizing: border-box;
+  }
+  button {
+    width: 100%; padding: 10px 0; border: none; border-radius: 8px; background: var(--accent); color: #fff;
+    font-size: 14px; cursor: pointer; font-weight: 600;
+  }
+  button:hover { opacity: 0.9; }
+  .error { color: #b3402f; font-size: 12.5px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>super_brain</h1>
+    <div class="sub">一人公司的战略决策系统</div>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post">
+      <input type="password" name="password" placeholder="密码" autofocus required>
+      <button type="submit">进入</button>
+    </form>
+  </div>
+</body>
+</html>

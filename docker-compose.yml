@@ -1,0 +1,14 @@
+services:
+  super_brain:
+    build: .
+    ports:
+      - "5151:5151"
+    environment:
+      - SUPER_BRAIN_PASSWORD=${SUPER_BRAIN_PASSWORD}
+      - SUPER_BRAIN_SECRET_KEY=${SUPER_BRAIN_SECRET_KEY}
+    volumes:
+      # 把整个仓库目录挂进容器——代码和数据（config.json、conversations/、tasks.yaml
+      # 这些真实数据）都留在服务器的宿主机文件系统上，不打进镜像。CI/CD 重新部署时
+      # 只需要 `git pull` + 重启容器，数据不会丢；镜像本身可以随便重建。
+      - .:/app
+    restart: unless-stopped

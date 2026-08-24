@@ -1,0 +1,23 @@
+# 跟 .gitignore 基本对应——不把真实凭据/个人数据/运行时产物打进镜像层。
+# 真正部署时这些文件通过 docker-compose 的 volume 挂载整个目录进容器，
+# 这里只是防止它们意外被 COPY 进镜像（镜像层可能被缓存/共享，不该含机密）。
+
+__pycache__/
+*.pyc
+
+config.json
+dispatch_log/
+logs/
+roundtable_log/
+conversations/
+agents/*/lessons.md
+draft_log/
+video_prompt_conversations/
+private_chat_conversations/
+daily_digests/
+tasks.yaml
+task_drafts/
+agents/*/reviews/
+
+.git/
+.github/

@@ -18,6 +18,7 @@ inbox/dispatcher/自动化通道这些"助手·执行工具"相关的运维操�
 """
 import json
 import logging
+import os
 import queue
 import re
 import secrets
@@ -48,7 +49,44 @@ configure_logging()
 logger = logging.getLogger("super_brain.ui")
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(16)  # 仅本机单进程用，重启就换，不需要跨进程持久
+# 本机开发默认随机生成、重启就换（单进程用，够了）；部署到服务器后如果设了
+# SUPER_BRAIN_SECRET_KEY，用固定值——不然每次 CI/CD 重新部署容器都会让所有人重新登录。
+app.secret_key = os.environ.get("SUPER_BRAIN_SECRET_KEY") or secrets.token_hex(16)
+
+# 登录密码——不设置这个环境变量就完全不启用登录（本机开发保持现在"直接打开就能用"的行为）。
+# 部署到服务器、对公网开放时，必须设置这个环境变量，否则任何人都能看到真实的圆桌讨论记录、
+# 私聊内容、任务清单，还能点按钮触发真实的 DeepSeek 付费调用。
+SUPER_BRAIN_PASSWORD = os.environ.get("SUPER_BRAIN_PASSWORD")
+
+
+@app.before_request
+def _require_login():
+    if not SUPER_BRAIN_PASSWORD:
+        return  # 没配密码，本机开发场景，不拦
+    if request.endpoint in ("login", "static") or request.path.startswith("/static/"):
+        return
+    if not session.get("authenticated"):
+        return redirect(url_for("login", next=request.path))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not SUPER_BRAIN_PASSWORD:
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        if request.form.get("password") == SUPER_BRAIN_PASSWORD:
+            session["authenticated"] = True
+            next_path = request.args.get("next") or url_for("index")
+            return redirect(next_path)
+        error = "密码不对"
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    session.pop("authenticated", None)
+    return redirect(url_for("login"))
 app.jinja_env.globals["agent_label"] = i18n.agent_label  # 模板里到处能用，不用每次显式传
 app.jinja_env.globals["get_task"] = lambda tid: next(
     (t for t in tasks.load_tasks() if t["id"] == tid), None
@@ -1112,8 +1150,14 @@ def draft_preview():
     return render_template("draft_preview.html", path=str(target), content=content)
 
 
+threading.Thread(target=_daily_batch_scheduler_loop, daemon=True).start()
+logger.info("每日 18 点批量汇总的调度线程已启动（每分钟检查一次）")
+
 if __name__ == "__main__":
-    logger.info("===== super_brain UI 启动，http://127.0.0.1:5151 =====")
-    threading.Thread(target=_daily_batch_scheduler_loop, daemon=True).start()
-    logger.info("每日 18 点批量汇总的调度线程已启动（每分钟检查一次）")
-    app.run(host="127.0.0.1", port=5151, debug=False, threaded=True)
+    # 本机开发默认只监听 127.0.0.1（不对局域网/公网开放）；容器部署时 Dockerfile 会把
+    # SUPER_BRAIN_HOST 设成 0.0.0.0，否则容器外访问不到。生产环境走 gunicorn（见
+    # Dockerfile），不会执行这个 __main__ 分支，这里只是本机 `python ui_app.py` 的入口。
+    host = os.environ.get("SUPER_BRAIN_HOST", "127.0.0.1")
+    port = int(os.environ.get("SUPER_BRAIN_PORT", "5151"))
+    logger.info(f"===== super_brain UI 启动，http://{host}:{port} =====")
+    app.run(host=host, port=port, debug=False, threaded=True)

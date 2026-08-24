@@ -49,25 +49,63 @@ def generate_content_brief(content: str, api_key: str) -> str:
     return brief
 
 
-def generate_wechat_html(opc_content: str, api_key: str) -> tuple[str, str]:
-    """调 DeepSeek 把 opc 笔记转成公众号标题 + 带内联 style 的 HTML 正文（微信不支持外部 CSS）。
-    先跑 content-strategist 的上游策划简报，再接上 writer 的运营写作技能框架（取舍原则、
-    具体场景优先、避免自证式空话这几条），最后叠加公众号这个平台的具体格式规则——
-    三层不是互相独立的写作哲学，策划简报负责"怎么设计抓人"，writer 框架负责"怎么取舍
-    表达"，平台规则负责"具体格式"。
+def generate_writer_draft(content: str, api_key: str) -> str:
+    """约束链条的前两环——content-strategist 定策略、writer 按框架执行，产出一份**平台
+    无关**的成品草稿。这是 toutiao/公众号唯一的内容判断入口：下游平台格式适配函数
+    （adapt_draft_to_*）只允许对这份草稿做格式转换，不能重新判断"这篇内容该强调什么、
+    该砍什么"——保证同一份素材生成的头条版和公众号版，核心判断是一致的，不会因为各自
+    独立调用一次 DeepSeek 而产生分歧。也是 Round 3 任务派给 writer 时的生成函数（一句
+    任务描述同样先过 content-strategist 再过 writer，不再跳过策划这一步）。
     """
-    brief = generate_content_brief(opc_content, api_key)
+    brief = generate_content_brief(content, api_key)
 
     registry = load_agent_registry()
     writer_context = load_private_context("writer", registry)
     system_prompt = (
-        f"下面是 content-strategist 给出的策划简报，正式写作时要落实简报里的钩子/节奏/"
-        f"取舍建议（跨媒介类比的规则已经在简报里标注过，公众号是文字内容，直接按简报的"
+        f"下面是 content-strategist 给出的策划简报，正式写作时必须落实简报里的钩子/节奏/"
+        f"取舍建议（跨媒介类比的规则已经在简报里标注过，这里是文字内容，直接按简报的"
         f"文字化建议执行即可）：\n\n{brief}\n\n"
-        f"下面是通用的运营写作技能框架，写之前先参照这里的取舍原则（具体场景优先、避免自证式"
-        f"空话、读者预期对齐）：\n\n{writer_context}\n\n"
-        "你现在具体要做的是公众号排版：把用户给的 Markdown 笔记转换成可以直接提交给微信公众号"
-        "草稿接口的 HTML。\n"
+        f"下面是你的运营写作技能框架（private.md 原文），必须遵循里面的取舍原则（具体场景"
+        f"优先、避免自证式空话、读者预期对齐）：\n\n{writer_context}\n\n"
+        "请根据我提供的素材，写出一份完整的成品文档——**不要考虑任何具体发布平台的格式"
+        "要求**（不要考虑头条号/公众号各自的排版规则，那是下一步的事），只专注内容本身："
+        "结构、取舍、表达。第一行输出一个简短标题（不要任何前缀符号），空一行，然后是正文。"
+    )
+    return call_deepseek(system_prompt, content, api_key, max_tokens=8000)
+
+
+def adapt_draft_to_toutiao(draft: str, api_key: str) -> str:
+    """约束链条的最后一环——只做头条号平台的格式转换，不重新判断内容（那是上游
+    content-strategist + writer 已经做完的事，这里拿到的 draft 已经是定稿）。
+    """
+    system_prompt = (
+        "下面是已经完成内容判断的成品草稿（content-strategist 定过策划、writer 按运营"
+        "写作框架取舍过），不要重新判断这篇内容该强调什么/该砍什么，只做头条号平台的"
+        "格式转换。\n\n"
+        "头条读者和平台特点：\n"
+        "- 标题要直白、有信息增量，避免\"震惊体\"和标题党，但要有一个清晰的钩子（数字/对比/反常识/疑问）\n"
+        "- 正文段落要短（2-4行一段），信息密度高，少用书面语和空话\n"
+        "- 避免营销号浮夸语气，观点要有具体案例或数据支撑（只使用草稿里真实提到的信息，不要编造）\n"
+        "- 结尾可以留一个自然的互动引导（提问/求关注），不要生硬\n\n"
+        "请基于我提供的草稿，输出以下结构（用于人工审阅后手动粘贴进头条号后台，不要输出多余的解释文字）：\n\n"
+        "## 候选标题\n给出 3 个不同角度的候选标题（编号列出）。\n\n"
+        "## 正文\n完整正文（800-1500字），用纯文本自然段落输出，段落之间空一行分隔，"
+        "不要使用任何 Markdown 语法符号（不要 #、不要 **加粗**、不要项目符号），因为这段文字会被"
+        "直接复制粘贴进头条号网页编辑器。如果草稿里包含 URL 链接，去掉 Markdown 链接语法包装，"
+        "但必须把完整的 URL 文本原样保留在正文里，绝对不能写\"链接在文末\"这类没有实际网址的占位说法。\n\n"
+        "## 建议标签\n3-5 个适合头条号的标签，逗号分隔。\n\n"
+        "## 建议分类\n给出一个最贴合的头条号内容分类（如：职场、科技、创业、AI、数码等）。"
+    )
+    return call_deepseek(system_prompt, draft, api_key, max_tokens=12000)
+
+
+def adapt_draft_to_wechat(draft: str, api_key: str) -> tuple[str, str]:
+    """约束链条的最后一环——只做公众号平台的格式转换，不重新判断内容（同上，draft 已经
+    是 content-strategist + writer 定稿过的成品）。"""
+    system_prompt = (
+        "下面是已经完成内容判断的成品草稿（content-strategist 定过策划、writer 按运营"
+        "写作框架取舍过），不要重新判断这篇内容该强调什么/该砍什么，只做公众号平台的"
+        "排版转换：把草稿转换成可以直接提交给微信公众号草稿接口的 HTML。\n"
         "格式规则：只能用 <h3>/<p>/<blockquote>/<strong>/<code> 这几个标签，每个标签都必须带"
         "内联 style 属性（微信不支持 <style> 块或外部 CSS），字号 15-16px、行高 1.8-1.9，正文"
         "颜色 #2e3a46，标题/重点用 #b8681e 做分隔线或强调色。公众号读者是主动点开、愿意深度"
@@ -75,13 +113,23 @@ def generate_wechat_html(opc_content: str, api_key: str) -> tuple[str, str]:
         "输出格式：第一行是文章标题（不要任何前缀符号），空一行，然后是完整 HTML 正文。"
         "不要输出除此之外的任何解释文字。"
     )
-    raw = call_deepseek(system_prompt, opc_content, api_key, max_tokens=12000)
+    raw = call_deepseek(system_prompt, draft, api_key, max_tokens=12000)
     parts = raw.strip().split("\n", 2)
     title = parts[0].strip().lstrip("#").strip()
     html = parts[-1].strip() if len(parts) > 1 else ""
     if not title or not html:
         raise publishers.PublishError(f"DeepSeek 生成的公众号内容格式不对，无法拆出标题/正文：{raw[:200]}")
     return title, html
+
+
+def generate_wechat_html(opc_content: str, api_key: str) -> tuple[str, str]:
+    """便捷封装——单独只需要公众号版本时用（完整走一遍 content-strategist → writer →
+    公众号格式适配三段）。如果同时还要头条版本，不要各自调用一次这种便捷函数，应该调用
+    generate_writer_draft() 一次拿到共享草稿，再分别调 adapt_draft_to_toutiao/wechat，
+    避免 writer 的内容判断被重复做两遍（见 execute_ops_assistant_from_minutes 的用法）。
+    """
+    draft = generate_writer_draft(opc_content, api_key)
+    return adapt_draft_to_wechat(draft, api_key)
 
 
 def execute_toutiao_draft(date: str, api_key: str) -> dict:
@@ -124,36 +172,13 @@ def execute_ops_assistant_full(date: str, api_key: str) -> dict:
 
 
 def generate_toutiao_article(content: str, api_key: str) -> str:
-    """跟 toutiao-agent 的 Generate-ToutiaoDraft.ps1 用同一套核心改写逻辑，输入源从固定的
-    opc_{date}.md 换成任意内容（这里是会议纪要）。先跑 content-strategist 的上游策划简报，
-    再接上 writer 的运营写作技能框架（同一套取舍原则），最后叠加头条这个平台的具体格式规则。
+    """便捷封装——单独只需要头条版本时用（完整走一遍 content-strategist → writer →
+    头条格式适配三段）。同时还要公众号版本时不要各自调用，理由同 generate_wechat_html
+    的说明。跟 toutiao-agent 的 Generate-ToutiaoDraft.ps1 是完全独立的两套实现，这个
+    函数走的是 super_brain 自己的 writer 框架，输入源可以是任意内容（会议纪要/任务描述）。
     """
-    brief = generate_content_brief(content, api_key)
-
-    registry = load_agent_registry()
-    writer_context = load_private_context("writer", registry)
-    system_prompt = (
-        f"下面是 content-strategist 给出的策划简报，正式写作时要落实简报里的钩子/节奏/"
-        f"取舍建议（跨媒介类比的规则已经在简报里标注过，头条是文字内容，直接按简报的"
-        f"文字化建议执行即可）：\n\n{brief}\n\n"
-        f"下面是通用的运营写作技能框架，写之前先参照这里的取舍原则（具体场景优先、避免自证式"
-        f"空话、读者预期对齐）：\n\n{writer_context}\n\n"
-        "你现在具体要做的是把工作素材改写成适合头条号发布的图文文章。\n\n"
-        "头条读者和平台特点：\n"
-        "- 标题要直白、有信息增量，避免\"震惊体\"和标题党，但要有一个清晰的钩子（数字/对比/反常识/疑问）\n"
-        "- 正文段落要短（2-4行一段），信息密度高，少用书面语和空话\n"
-        "- 避免营销号浮夸语气，观点要有具体案例或数据支撑（只使用素材里真实提到的信息，不要编造）\n"
-        "- 结尾可以留一个自然的互动引导（提问/求关注），不要生硬\n\n"
-        "请基于我提供的素材，输出以下结构（用于人工审阅后手动粘贴进头条号后台，不要输出多余的解释文字）：\n\n"
-        "## 候选标题\n给出 3 个不同角度的候选标题（编号列出）。\n\n"
-        "## 正文\n完整正文（800-1500字），用纯文本自然段落输出，段落之间空一行分隔，"
-        "不要使用任何 Markdown 语法符号（不要 #、不要 **加粗**、不要项目符号），因为这段文字会被"
-        "直接复制粘贴进头条号网页编辑器。如果素材里包含 URL 链接，去掉 Markdown 链接语法包装，"
-        "但必须把完整的 URL 文本原样保留在正文里，绝对不能写\"链接在文末\"这类没有实际网址的占位说法。\n\n"
-        "## 建议标签\n3-5 个适合头条号的标签，逗号分隔。\n\n"
-        "## 建议分类\n给出一个最贴合的头条号内容分类（如：职场、科技、创业、AI、数码等）。"
-    )
-    return call_deepseek(system_prompt, content, api_key, max_tokens=12000)
+    draft = generate_writer_draft(content, api_key)
+    return adapt_draft_to_toutiao(draft, api_key)
 
 
 def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
@@ -168,8 +193,22 @@ def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
 
     results: dict = {}
 
+    # 头条 + 公众号同时要，只跑一次 content-strategist + writer，两个平台共享同一份
+    # draft，只各自做格式适配——避免两个平台各自独立判断"这篇内容该强调什么"，导致
+    # 两个版本的核心信息取舍不一致。
     try:
-        article = generate_toutiao_article(content, api_key)
+        draft = generate_writer_draft(content, api_key)
+    except Exception as exc:
+        logger.exception("[ops-assistant] 从会议纪要生成共享草稿失败，头条/公众号都无法继续")
+        results["draft_error"] = str(exc)
+        log_execution(
+            "ops-assistant", "从会议纪要分发草稿", f"来源={minutes_path}，结果：{results}",
+            status="error",
+        )
+        return results
+
+    try:
+        article = adapt_draft_to_toutiao(draft, api_key)
         slug = re.sub(r"[^\w一-鿿-]", "-", path.stem)[:40].strip("-") or "untitled"
         draft_path = publishers.get_toutiao_drafts_dir() / f"toutiao_from_minutes_{slug}.md"
         draft_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,7 +221,7 @@ def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
         results["toutiao_error"] = str(exc)
 
     try:
-        title, html = generate_wechat_html(content, api_key)
+        title, html = adapt_draft_to_wechat(draft, api_key)
         results["wechat"] = publishers.publish_wechat_draft(title, html)
         logger.info(f"[ops-assistant] 从会议纪要生成公众号草稿成功：{title!r}")
     except publishers.PublishError as exc:
@@ -197,21 +236,12 @@ def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
     return results
 
 
-def _generate_writer_draft(description: str, api_key: str) -> str:
-    """Round 3 任务确认后，派给 writer 的步骤——用它的运营写作技能框架，从一句任务描述
-    直接产出一份独立文档草稿（不是会议纪要，输入源不是圆桌讨论原始记录，是 Round 3 收敛
-    出的具体行动描述）。落盘到 task_drafts/，不发布、不群发，只到"草稿已生成"为止。
+def _save_writer_task_draft(description: str, api_key: str) -> str:
+    """Round 3 任务确认后，派给 writer 的步骤——现在同样先过 content-strategist 再过
+    writer（调用共享的 generate_writer_draft，不再是独立跳过策划这一步的旧实现），
+    落盘到 task_drafts/，不发布、不群发，只到"草稿已生成"为止。
     """
-    registry = load_agent_registry()
-    writer_context = load_private_context("writer", registry)
-    system_prompt = (
-        f"下面是你的运营写作技能框架（private.md 原文），写作时必须遵循里面的取舍原则："
-        f"\n\n{writer_context}\n\n"
-        "你现在要做的不是写会议纪要，是根据一句具体的行动描述，直接写出对应的成品文档"
-        "（比如一份公告、一封说明、一段说明文案——文体由这句描述本身决定，不要额外套用"
-        "会议纪要的格式）。第一行输出一个简短标题（不要任何前缀符号），空一行，然后是正文。"
-    )
-    raw = call_deepseek(system_prompt, description, api_key, max_tokens=6000)
+    raw = generate_writer_draft(description, api_key)
     lines = raw.strip().split("\n", 1)
     title = lines[0].strip().lstrip("#").strip() or "未命名草稿"
     slug = re.sub(r"[^\w一-鿿-]", "-", title)[:40].strip("-") or "untitled"
@@ -265,7 +295,7 @@ def generate_task_artifact(task: dict, api_key: str) -> str:
         raise ValueError("任务没有描述内容，没法生成产物")
 
     if agent == "writer":
-        return _generate_writer_draft(description, api_key)
+        return _save_writer_task_draft(description, api_key)
     if agent == "toutiao":
         return _generate_toutiao_draft_from_task(description, api_key)
     if agent == "video-prompt":
