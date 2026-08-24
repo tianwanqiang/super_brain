@@ -122,6 +122,61 @@
   {% endfor %}
 </table>
 
+<h2>每日 18 点批量汇总</h2>
+<p style="font-size:12.5px; color:#888;">
+  后台线程每分钟检查一次，过了 18 点且今天还没跑过就自动触发一次——如果当天有 opc 笔记，
+  会真的调 ops-assistant 生成头条/公众号草稿，再把今天的任务/圆桌/inbox 状态汇总成一份文档，
+  存到 <code>daily_digests/&lt;日期&gt;.md</code>。
+  {% if last_daily_batch_date %}今天已经跑过一次（{{ last_daily_batch_date }}）。
+  {% else %}今天还没跑过。{% endif %}
+</p>
+<form class="inline" method="post" action="{{ url_for('daily_batch_run_now') }}">
+  <button type="submit">立即手动跑一次（测试用，会真实花额度）</button>
+</form>
+
+<h2>机制 2 · 定期复盘</h2>
+<p style="font-size:12.5px; color:#888;">
+  读一个 agent 的 lessons.md（圆桌型是 LLM 自我反思，执行型是事实记录）+ 现有 private.md，
+  生成一份"要不要调整判断规则"的建议——只是建议，落盘成独立文件，不会自动改 private.md。
+  点"采纳"才会真的追加进 private.md（只追加，不覆写已有内容）。
+</p>
+<table>
+  <tr><th>Agent</th><th>lessons.md</th><th>操作</th><th>历史建议</th></tr>
+  {% for a in review_agents %}
+  {% set state = review_state[a.name] %}
+  <tr>
+    <td>{{ agent_label(a.name) }}（{{ a.name }}）</td>
+    <td>{% if state.has_lessons %}有记录{% else %}<span style="color:#999;">暂无记录</span>{% endif %}</td>
+    <td>
+      <form class="inline" method="post" action="{{ url_for('review_generate') }}" style="margin:0;">
+        <input type="hidden" name="agent" value="{{ a.name }}">
+        <button type="submit" class="secondary" {{ 'disabled' if not state.has_lessons else '' }}>生成复盘建议</button>
+      </form>
+    </td>
+    <td>
+      {% if state.reviews %}
+      {% for r in state.reviews %}
+      <div style="margin-bottom:6px;">
+        <code style="font-size:11.5px;">{{ r.filename }}</code>
+        {% if r.applied %}
+        <span class="pill pill-done">已采纳</span>
+        {% else %}
+        <form class="inline" method="post" action="{{ url_for('review_apply') }}" style="display:inline-flex; margin:0 0 0 6px;">
+          <input type="hidden" name="agent" value="{{ a.name }}">
+          <input type="hidden" name="path" value="{{ r.path }}">
+          <button type="submit">采纳（追加进 private.md）</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+      {% else %}
+      <span style="color:#999; font-size:12.5px;">还没生成过</span>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+
 <h2>最近日志（logs/super_brain.log 末尾）</h2>
 <pre>{{ recent_log or "（还没有日志）" }}</pre>
 

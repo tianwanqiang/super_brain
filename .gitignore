@@ -26,3 +26,18 @@ draft_log/
 
 # video-prompt 的多轮对话记录，是个人数据不是代码
 video_prompt_conversations/
+
+# 专家私聊记录（隔离会话，含真实追问内容），是个人数据不是代码
+private_chat_conversations/
+
+# 每日 18 点批量汇总（含当天真实任务/讨论摘要），是个人数据不是代码
+daily_digests/
+
+# Round 3 收敛出的任务条目（含真实决策描述），是个人数据不是代码
+tasks.yaml
+
+# Round 3 任务确认后生成的产物草稿，是运行时产物不是代码
+task_drafts/
+
+# 机制 2 定期复盘生成的建议（源头是 lessons.md，同样是运行时产物不是代码）
+agents/*/reviews/

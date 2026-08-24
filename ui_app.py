@@ -24,17 +24,25 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 
+import agent_registry
+import digest
 import dispatcher
+import executors
 import i18n
+import private_chat
 import publishers
+import review
 import roundtable
+import tasks
 import video_prompt
 from log_setup import configure_logging
+from paths import DEEPSEEK_CONFIG_PATH
 
 configure_logging()
 logger = logging.getLogger("super_brain.ui")
@@ -42,6 +50,9 @@ logger = logging.getLogger("super_brain.ui")
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(16)  # 仅本机单进程用，重启就换，不需要跨进程持久
 app.jinja_env.globals["agent_label"] = i18n.agent_label  # 模板里到处能用，不用每次显式传
+app.jinja_env.globals["get_task"] = lambda tid: next(
+    (t for t in tasks.load_tasks() if t["id"] == tid), None
+)  # Round 3 结论落地的任务条目，按 id 查——个人量级，直接线性查找不需要建索引
 
 # 2026-08-15 修复：根因不只是"按钮没反馈"——之前 /roundtable/run 是同步阻塞处理，圆桌讨论
 # 跑多久（15-40 秒）请求就挂多久，而 Flask 开发服务器默认单线程，这期间整个服务器无法响应
@@ -263,7 +274,7 @@ def persist_draft_log(minutes_path: str, result: dict) -> None:
 
 def render_chat(conversation_id: str | None = None, force_new: bool = False, **extra):
     """主界面：圆桌讨论聊天窗口，以会话为单位管理——不再是所有讨论堆在一条流水账里。"""
-    registry = dispatcher.load_agent_registry()
+    registry = agent_registry.load_agent_registry()
     roundtable_agents, _, _ = categorize_agents(registry)
     config = load_config_safe()
     # 表单校验/锁冲突这类错误在原始请求里就能立刻判断，走 session flash；
@@ -297,13 +308,15 @@ def render_chat(conversation_id: str | None = None, force_new: bool = False, **e
         current_draft=_get_current_draft(),
         draft_error=draft_error,
         agent_labels_json=json.dumps(i18n.AGENT_LABELS_ZH, ensure_ascii=False),
+        pending_tasks=tasks.pending_tasks(),
+        sidebar_tab=request.args.get("tab", "conversations"),
         **extra,
     )
 
 
 def render_admin(**extra):
     """二级页面：inbox / dispatcher / 自动化通道这些运维操作，不是主界面。"""
-    registry = dispatcher.load_agent_registry()
+    registry = agent_registry.load_agent_registry()
     roundtable_agents, conversation_agents, assistant_agents = categorize_agents(registry)
     messages = parse_all_messages_for_display()
     pending_count = sum(1 for m in messages if m.get("status") == "pending")
@@ -314,6 +327,14 @@ def render_admin(**extra):
         recent_log = "\n".join(
             LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
         ) if LOG_FILE.exists() else ""
+
+    # 机制 2·定期复盘——coordinator 没有 lessons.md 记录机制，不参与复盘列表
+    review_agents = [a for a in sorted(registry.values(), key=lambda a: a.get("name", ""))
+                      if a.get("name") != "coordinator"]
+    review_state = {
+        a["name"]: {"has_lessons": review.has_lessons(a["name"]), "reviews": review.list_reviews(a["name"])}
+        for a in review_agents
+    }
 
     return render_template(
         "admin.html",
@@ -326,6 +347,9 @@ def render_admin(**extra):
         meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
         toutiao_drafts_dir_configured=config.get("TOUTIAO_DRAFTS_DIR"),
         toutiao_drafts_dir_effective=str(publishers.get_toutiao_drafts_dir()),
+        review_agents=review_agents,
+        review_state=review_state,
+        last_daily_batch_date=_last_daily_batch_date,
         **extra,
     )
 
@@ -506,9 +530,9 @@ def minutes_draft():
     def _worker():
         try:
             api_key = json.loads(
-                dispatcher.DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig")
+                DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig")
             )["DEEPSEEK_API_KEY"]
-            result = dispatcher.execute_ops_assistant_from_minutes(minutes_path, api_key)
+            result = executors.execute_ops_assistant_from_minutes(minutes_path, api_key)
             persist_draft_log(minutes_path, result)
         except FileNotFoundError as exc:
             logger.warning(f"UI：草稿生成失败：{exc}")
@@ -544,6 +568,231 @@ def conversation_delete(conversation_id):
     return redirect(url_for("index"))
 
 
+@app.route("/roundtable/mention", methods=["POST"])
+def roundtable_mention():
+    """CEO 在圆桌讨论里 @ 某个专家单独提问——同步调用（比一整场圆桌快得多，不需要走
+    流式/后台线程那一套），回复直接追加进这场会话的记录。跟"私聊"是两个不同机制，
+    这里刻意不隔离，问答会留在会话里供后续参考。
+    """
+    conversation_id = request.form.get("conversation_id", "").strip()
+    agent_name = request.form.get("agent", "").strip()
+    message = request.form.get("message", "").strip()
+    if not conversation_id or not agent_name or not message:
+        session["roundtable_error"] = "@ 提问需要选定专家、填写问题。"
+        return redirect(url_for("index", conversation=conversation_id or None))
+
+    try:
+        roundtable.ask_agent_mention(conversation_id, agent_name, message)
+    except roundtable.RoundtableError as exc:
+        logger.warning(f"UI：@ 提问参数错误：{exc}")
+        session["roundtable_error"] = str(exc)
+    except Exception:
+        logger.exception("UI：@ 提问调用失败")
+        session["roundtable_error"] = "@ 提问失败，详情看 logs/super_brain.log"
+    return redirect(url_for("index", conversation=conversation_id))
+
+
+@app.route("/tasks/<task_id>/status", methods=["POST"])
+def task_status_update(task_id):
+    """CEO 对 Round 3 收敛出的任务条目做确认/否掉/手动标记完成。
+
+    先预览、CEO 点头之后才花这次调用——确认（confirmed）会真正触发对应 agent 生成产物，
+    不是 Round 3 阶段就抢先生成好。生成成功后状态会再往前推进到 done、写入
+    artifact_path；如果这类任务目前没有自动生成能力（比如 ship 的代码提交、邮件发送），
+    状态停在 confirmed，人工完成后自己点"标记为已完成"（直接提交 status=done）。
+    """
+    status = request.form.get("status", "").strip()
+    conversation_id = request.form.get("conversation_id", "").strip()
+    tab = request.form.get("tab", "").strip() or None  # "todo" 表示从侧边栏待办 tab 触发，操作完要留在待办 tab
+
+    def _back(**extra_args):
+        return redirect(url_for("index", conversation=conversation_id or None, tab=tab, **extra_args))
+
+    try:
+        ok = tasks.update_task_status(task_id, status)
+    except ValueError as exc:
+        session["roundtable_error"] = str(exc)
+        return _back()
+    if not ok:
+        session["roundtable_error"] = f"任务不存在：{task_id}"
+        return _back()
+
+    if status == "confirmed":
+        task = next((t for t in tasks.load_tasks() if t["id"] == task_id), None)
+        if task is not None:
+            if not DEEPSEEK_CONFIG_PATH.exists():
+                session["roundtable_error"] = (
+                    f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}），产物没有生成，任务停在 confirmed。"
+                )
+            else:
+                api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
+                try:
+                    artifact = executors.generate_task_artifact(task, api_key)
+                    tasks.update_task_status(task_id, "done", artifact_path=artifact)
+                    logger.info(f"UI：任务 {task_id} 产物已生成：{artifact}")
+                except NotImplementedError as exc:
+                    logger.info(f"UI：任务 {task_id} 暂不支持自动生成产物：{exc}")
+                    session["roundtable_error"] = str(exc)
+                except Exception:
+                    logger.exception(f"UI：任务 {task_id} 生成产物失败")
+                    session["roundtable_error"] = "生成产物失败，详情看 logs/super_brain.log，任务停在 confirmed。"
+
+    return _back()
+
+
+@app.route("/tasks/<task_id>/feedback", methods=["POST"])
+def task_feedback(task_id):
+    """CEO 对已生成产物的质量反馈——追加进对应 agent 的 lessons.md，喂给机制 2（定期复盘）
+    用来判断要不要调整 private.md。这是纯记录动作，不会重新生成产物、不会改任务状态。
+    """
+    feedback = request.form.get("feedback", "").strip()
+    conversation_id = request.form.get("conversation_id", "").strip()
+    tab = request.form.get("tab", "").strip() or None
+
+    if not feedback:
+        session["roundtable_error"] = "反馈内容不能为空。"
+        return redirect(url_for("index", conversation=conversation_id or None, tab=tab))
+
+    task = next((t for t in tasks.load_tasks() if t["id"] == task_id), None)
+    if task is None:
+        session["roundtable_error"] = f"任务不存在：{task_id}"
+        return redirect(url_for("index", conversation=conversation_id or None, tab=tab))
+
+    agent_name = task.get("assignee_agent")
+    if not agent_name:
+        session["roundtable_error"] = "这条任务没有对应的执行 agent，没法记录反馈。"
+        return redirect(url_for("index", conversation=conversation_id or None, tab=tab))
+
+    agent_registry.log_artifact_feedback(agent_name, task.get("description", ""), task.get("artifact_path"), feedback)
+    logger.info(f"UI：任务 {task_id} 的产物质量反馈已记录到 {agent_name} 的 lessons.md")
+    return redirect(url_for("index", conversation=conversation_id or None, tab=tab))
+
+
+def render_private_chat(conversation_id: str | None = None, **extra):
+    conversations = private_chat.load_all_conversations()
+    active = None
+    active_id = conversation_id
+    if active_id:
+        active = next((c for c in conversations if c["id"] == active_id), None)
+    if active is None:
+        active_id = None
+
+    error = session.pop("private_chat_error", None) or _pop_private_chat_error()
+
+    return render_template(
+        "private_chat.html",
+        conversations=conversations,
+        active_conversation=active,
+        active_conversation_id=active_id,
+        current_run=_get_current_private_chat_run(),
+        private_chat_error=error,
+        **extra,
+    )
+
+
+@app.route("/private-chat/start", methods=["POST"])
+def private_chat_start():
+    """从一场圆桌讨论的某一轮里，针对某个专家开一个新的隔离私聊——种子上下文只带这位
+    专家自己在那一轮的发言，不夹带其他专家的意见。"""
+    source_conversation_id = request.form.get("conversation_id", "").strip()
+    agent_name = request.form.get("agent", "").strip()
+    turn_index = request.form.get("turn_index", "").strip()
+    message = request.form.get("message", "").strip()
+
+    if not source_conversation_id or not agent_name or not message:
+        session["roundtable_error"] = "开始私聊需要来源会话、专家、第一条消息。"
+        return redirect(url_for("index", conversation=source_conversation_id or None))
+
+    source = roundtable.load_conversation(source_conversation_id)
+    if source is None:
+        session["roundtable_error"] = f"来源会话不存在：{source_conversation_id}"
+        return redirect(url_for("index"))
+    try:
+        idx = int(turn_index)
+        source_turn = source["turns"][idx]
+    except (ValueError, IndexError):
+        session["roundtable_error"] = "找不到对应的圆桌讨论轮次，没法开始私聊。"
+        return redirect(url_for("index", conversation=source_conversation_id))
+
+    try:
+        conversation_id = private_chat.create_conversation(agent_name, source_conversation_id, source_turn, message)
+    except private_chat.PrivateChatError as exc:
+        session["roundtable_error"] = str(exc)
+        return redirect(url_for("index", conversation=source_conversation_id))
+
+    if not _private_chat_lock.acquire(blocking=False):
+        session["roundtable_error"] = "已经有一次私聊生成正在进行中，请等它结束再提交。"
+        return redirect(url_for("index", conversation=source_conversation_id))
+
+    _set_current_private_chat_run({"conversation_id": conversation_id, "started_at": datetime.now().strftime("%H:%M:%S")})
+
+    def _worker():
+        try:
+            private_chat.send_message(conversation_id, message)
+        except private_chat.PrivateChatError as exc:
+            _set_private_chat_error(str(exc))
+        except Exception:
+            logger.exception("UI：私聊生成失败")
+            _set_private_chat_error("生成失败，详情看 logs/super_brain.log")
+        finally:
+            _set_current_private_chat_run(None)
+            _private_chat_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return redirect(url_for("private_chat_page", conversation=conversation_id))
+
+
+@app.route("/private-chat/<conversation_id>")
+def private_chat_page(conversation_id):
+    return render_private_chat(conversation_id=conversation_id)
+
+
+@app.route("/private-chat")
+def private_chat_list():
+    return render_private_chat()
+
+
+@app.route("/private-chat/send", methods=["POST"])
+def private_chat_send():
+    message = request.form.get("message", "").strip()
+    conversation_id = request.form.get("conversation_id", "").strip()
+    if not message or not conversation_id:
+        session["private_chat_error"] = "请填写要问的问题。"
+        return redirect(url_for("private_chat_page", conversation_id=conversation_id))
+
+    if not _private_chat_lock.acquire(blocking=False):
+        session["private_chat_error"] = "已经有一次生成正在进行中，请等它结束再提交。"
+        return redirect(url_for("private_chat_page", conversation_id=conversation_id))
+
+    _set_current_private_chat_run({"conversation_id": conversation_id, "started_at": datetime.now().strftime("%H:%M:%S")})
+
+    def _worker():
+        try:
+            private_chat.send_message(conversation_id, message)
+        except private_chat.PrivateChatError as exc:
+            _set_private_chat_error(str(exc))
+        except Exception:
+            logger.exception("UI：私聊生成失败")
+            _set_private_chat_error("生成失败，详情看 logs/super_brain.log")
+        finally:
+            _set_current_private_chat_run(None)
+            _private_chat_lock.release()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return redirect(url_for("private_chat_page", conversation_id=conversation_id))
+
+
+@app.route("/private-chat/status")
+def private_chat_status():
+    return jsonify({"running": _get_current_private_chat_run() is not None})
+
+
+@app.route("/private-chat/<conversation_id>/delete", methods=["POST"])
+def private_chat_delete(conversation_id):
+    private_chat.delete_conversation(conversation_id)
+    return redirect(url_for("private_chat_list"))
+
+
 # 2026-08-18 新增：video-prompt 是"正式角色"——独立的多轮对话，走真实 DeepSeek 程序化
 # 调用（不依赖 Claude Code 在场），admin 页面新增一块功能区，不占主界面。同样的教训、
 # 同样的模式：后台线程执行 + 锁防重复点击 + 轮询状态，不会重蹈"同步阻塞卡死服务器"的错。
@@ -574,6 +823,69 @@ def _pop_video_prompt_error() -> str | None:
     with _state_lock:
         message, _last_video_prompt_error = _last_video_prompt_error, None
         return message
+
+
+# 专家私聊——跟 video-prompt 完全同一套模式（后台线程 + 锁防重复点击 + 轮询状态），
+# 私聊本身走的是 private_chat.py 的隔离会话存储，不复用 video_prompt 的存储/状态。
+_private_chat_lock = threading.Lock()
+_current_private_chat_run: dict | None = None
+_last_private_chat_error: str | None = None
+
+
+def _set_current_private_chat_run(value: dict | None) -> None:
+    global _current_private_chat_run
+    with _state_lock:
+        _current_private_chat_run = value
+
+
+def _get_current_private_chat_run() -> dict | None:
+    with _state_lock:
+        return _current_private_chat_run
+
+
+def _set_private_chat_error(message: str | None) -> None:
+    global _last_private_chat_error
+    with _state_lock:
+        _last_private_chat_error = message
+
+
+def _pop_private_chat_error() -> str | None:
+    global _last_private_chat_error
+    with _state_lock:
+        message, _last_private_chat_error = _last_private_chat_error, None
+        return message
+
+
+# 每日 18 点批量汇总——后台线程每分钟检查一次，一旦当天首次过了 18 点就跑一次
+# digest.run_daily_batch()，一天只跑一次（_last_daily_batch_date 记住今天跑过没）。
+# 老实说清楚：这是真实会花 DeepSeek 额度的调用（如果当天有 opc 笔记的话）——服务器一旦
+# 启动，这个线程就是活的，18 点之后自动触发，不需要也不会再问一遍。
+_last_daily_batch_date: str | None = None
+
+
+def _run_daily_batch_once(trigger_label: str) -> None:
+    global _last_daily_batch_date
+    if not DEEPSEEK_CONFIG_PATH.exists():
+        logger.warning(f"每日批处理（{trigger_label}）：找不到 DeepSeek 配置，跳过")
+        return
+    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
+    try:
+        out_path = digest.run_daily_batch(api_key=api_key)
+        logger.info(f"每日批处理（{trigger_label}）完成：{out_path}")
+    except Exception:
+        logger.exception(f"每日批处理（{trigger_label}）失败")
+    finally:
+        _last_daily_batch_date = datetime.now().strftime("%Y-%m-%d")
+
+
+def _daily_batch_scheduler_loop() -> None:
+    while True:
+        time.sleep(60)
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        if now.hour >= 18 and _last_daily_batch_date != today_str:
+            logger.info("每日批处理：过了 18 点且今天还没跑过，自动触发")
+            _run_daily_batch_once("18点自动触发")
 
 
 def render_video_prompt(conversation_id: str | None = None, **extra):
@@ -661,6 +973,56 @@ def video_prompt_delete(conversation_id):
 @app.route("/admin")
 def admin():
     return render_admin()
+
+
+@app.route("/today")
+def today_digest():
+    """主动触发层——零成本聚合视图，不调用任何 LLM，随便刷新都不花钱。
+    汇总今天还没处理的东西：待确认任务、待处理 inbox 留言、今天开过的圆桌讨论。
+    """
+    d = digest.build_today_digest()
+    return render_template("today.html", digest=d)
+
+
+@app.route("/admin/daily-batch/run", methods=["POST"])
+def daily_batch_run_now():
+    """手动立即跑一次每日批处理——测试用，不用等到真的 18 点。会真的花 DeepSeek 额度
+    （如果今天的 opc 笔记存在的话），点这个按钮就是在做那次真实调用。
+    """
+    _run_daily_batch_once("手动触发")
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/review/generate", methods=["POST"])
+def review_generate():
+    """机制 2·定期复盘——真实调用 DeepSeek，读这个 agent 的 lessons.md + 现有 private.md，
+    生成一份调整建议，落盘成独立文件，不会碰 private.md 本身。"""
+    agent_name = request.form.get("agent", "").strip()
+    if not DEEPSEEK_CONFIG_PATH.exists():
+        session["roundtable_error"] = f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}）"
+        return redirect(url_for("admin"))
+    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
+    try:
+        review.generate_review_suggestion(agent_name, api_key)
+    except review.ReviewError as exc:
+        session["roundtable_error"] = str(exc)
+    except Exception:
+        logger.exception(f"UI：{agent_name} 定期复盘生成失败")
+        session["roundtable_error"] = "定期复盘生成失败，详情看 logs/super_brain.log"
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/review/apply", methods=["POST"])
+def review_apply():
+    """CEO 点"采纳"——把这条复盘建议追加进 private.md 末尾（只追加，不覆写），
+    是这条建议唯一会真正改变 agent 行为的动作，必须人工点一下才会发生。"""
+    agent_name = request.form.get("agent", "").strip()
+    review_path = request.form.get("path", "").strip()
+    try:
+        review.apply_review(agent_name, review_path)
+    except review.ReviewError as exc:
+        session["roundtable_error"] = str(exc)
+    return redirect(url_for("admin"))
 
 
 @app.route("/inbox/new", methods=["POST"])
@@ -752,4 +1114,6 @@ def draft_preview():
 
 if __name__ == "__main__":
     logger.info("===== super_brain UI 启动，http://127.0.0.1:5151 =====")
+    threading.Thread(target=_daily_batch_scheduler_loop, daemon=True).start()
+    logger.info("每日 18 点批量汇总的调度线程已启动（每分钟检查一次）")
     app.run(host="127.0.0.1", port=5151, debug=False, threaded=True)

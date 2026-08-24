@@ -12,13 +12,9 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from dispatcher import (
-    DEEPSEEK_CONFIG_PATH,
-    SUPER_BRAIN,
-    call_deepseek_messages,
-    load_agent_registry,
-    load_private_context,
-)
+from agent_registry import load_agent_registry, load_private_context, log_execution
+from llm_client import call_deepseek_messages
+from paths import DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.video_prompt")
 
@@ -122,4 +118,5 @@ def send_message(conversation_id: str, user_message: str) -> dict:
     data["updated_at"] = now2
     _conversation_path(conversation_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"video-prompt 会话已更新：{conversation_id}")
+    log_execution("video-prompt", "多轮对话回复", f"会话：{conversation_id}，用户消息：{user_message[:60]}")
     return data

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>今日待办 · super_brain</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #fff; --text: #1b2028; --muted: #6b7280; --border: #e5e5e5;
+    --accent: #0e6e76; --warn: #a35b00;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 32px 24px 60px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
+  h1 { font-size: 20px; margin: 0; }
+  header a { color: var(--muted); font-size: 12.5px; text-decoration: none; }
+  header a:hover { color: var(--accent); text-decoration: underline; }
+  .sub { color: var(--muted); font-size: 12.5px; margin-bottom: 28px; }
+  section { margin-bottom: 30px; }
+  h2 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .count { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--border); color: var(--muted); }
+  .count.nonzero { background: #fdecd2; color: var(--warn); }
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px; margin-bottom: 6px; font-size: 13.5px; line-height: 1.5;
+  }
+  .card .meta { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .card a { color: var(--accent); text-decoration: none; }
+  .card a:hover { text-decoration: underline; }
+  .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>今日待办</h1>
+    <a href="{{ url_for('index') }}">← 返回圆桌讨论</a>
+  </header>
+  <div class="sub">{{ digest.date }} · 零成本聚合视图，随便刷新都不花钱，不会主动推送通知——需要你自己打开看</div>
+
+  <section>
+    <h2>待确认的任务
+      <span class="count {{ 'nonzero' if digest.pending_tasks else '' }}">{{ digest.pending_tasks|length }}</span>
+    </h2>
+    {% if digest.pending_tasks %}
+    {% for t in digest.pending_tasks %}
+    <div class="card">
+      {{ t.description }}
+      {% if t.assignee_agent %}<span class="meta">→ {{ t.assignee_agent }}</span>{% endif %}
+      <div class="meta">来自会话 <a href="{{ url_for('index', conversation=t.conversation_id) }}">{{ t.question }}</a></div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="empty">没有待确认的任务</div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>待处理的 inbox 留言
+      <span class="count {{ 'nonzero' if digest.pending_inbox else '' }}">{{ digest.pending_inbox|length }}</span>
+    </h2>
+    {% if digest.pending_inbox %}
+    {% for m in digest.pending_inbox %}
+    <div class="card">
+      {{ m.message }}
+      <div class="meta">{{ m.get('from', '?') }} → {{ m.to }} @ {{ m.get('time', '?') }}</div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="empty">没有待处理的留言</div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>今天的圆桌讨论
+      <span class="count">{{ digest.today_conversations|length }}</span>
+    </h2>
+    {% if digest.today_conversations %}
+    {% for c in digest.today_conversations %}
+    <div class="card">
+      <a href="{{ url_for('index', conversation=c.id) }}">{{ c.title or '（无标题）' }}</a>
+      <div class="meta">{{ c.updated_at }} · {{ c.turns|length }} 轮</div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="empty">今天还没开过圆桌讨论</div>
+    {% endif %}
+  </section>
+</div>
+</body>
+</html>

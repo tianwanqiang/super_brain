@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>专家私聊 · super_brain</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #fff; --text: #1b2028; --muted: #6b7280; --border: #e5e5e5;
+    --accent: #6b3fa0; --warn-bg: #fdecd2; --warn-border: #a35b00; --warn-text: #7a4400;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font-family: -apple-system, "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+
+  .app { display: flex; height: 100vh; }
+
+  .sidebar {
+    flex: 0 0 260px; background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sidebar-header { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+  .sidebar-header h1 { font-size: 15px; margin: 0 0 2px; }
+  .sidebar-header .sub { font-size: 11px; color: var(--muted); }
+  .conv-list { flex: 1 1 auto; overflow-y: auto; padding: 8px; }
+  .conv-item { display: flex; align-items: stretch; gap: 4px; border-radius: 8px; margin-bottom: 2px; }
+  .conv-item.active { background: var(--bg); }
+  .conv-item a { flex: 1 1 auto; min-width: 0; padding: 9px 10px; text-decoration: none; color: var(--text); border-radius: 8px; }
+  .conv-item:not(.active) a:hover { background: var(--bg); }
+  .conv-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv-meta { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+  .conv-delete-form { flex: 0 0 auto; display: flex; align-items: center; }
+  .conv-delete-form button {
+    width: 22px; height: 22px; margin-right: 4px; border: none; border-radius: 6px; background: transparent;
+    color: var(--muted); font-size: 14px; cursor: pointer; line-height: 1;
+  }
+  .conv-delete-form button:hover { background: #fbe3e0; color: #8a2e20; }
+  .conv-empty { padding: 16px 10px; font-size: 12px; color: var(--muted); text-align: center; }
+
+  .main-panel { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 24px; background: var(--surface); border-bottom: 1px solid var(--border); flex: 0 0 auto;
+  }
+  header h1 { font-size: 16px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  header a { color: var(--muted); font-size: 12.5px; text-decoration: none; flex: 0 0 auto; margin-left: 14px; }
+  header a:hover { color: var(--accent); text-decoration: underline; }
+
+  .banner { margin: 10px 24px 0; padding: 10px 14px; border-radius: 6px; font-size: 13px; }
+  .banner-error { background: #fbe3e0; border: 1px solid #b3402f; color: #8a2e20; }
+
+  main.chat { flex: 1 1 auto; overflow-y: auto; padding: 20px 24px 8px; display: flex; flex-direction: column; gap: 16px; }
+  .empty-state { margin: auto; text-align: center; color: var(--muted); max-width: 460px; }
+  .empty-state h2 { font-size: 16px; color: var(--text); margin-bottom: 6px; }
+  .empty-state p { font-size: 13.5px; line-height: 1.6; }
+
+  .msg-user {
+    align-self: flex-end; max-width: 72%; background: var(--text); color: #fff;
+    padding: 10px 14px; border-radius: 12px 12px 2px 12px; font-size: 14px; line-height: 1.5; white-space: pre-wrap;
+  }
+  .msg-assistant {
+    align-self: flex-start; max-width: 80%; background: var(--surface); border: 1px solid var(--border);
+    border-left: 4px solid var(--accent); padding: 10px 14px; border-radius: 2px 12px 12px 12px;
+    font-size: 13.5px; line-height: 1.6; white-space: pre-wrap;
+  }
+  .msg-meta { font-size: 10.5px; color: var(--muted); align-self: flex-end; }
+  .msg-meta.assistant { align-self: flex-start; }
+
+  .bubble-pending {
+    align-self: flex-start; max-width: 78%; background: var(--surface); border: 1px dashed var(--border);
+    padding: 10px 14px; border-radius: 2px 12px 12px 12px; font-size: 13px; color: var(--muted);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .bubble-pending .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: pulse 1.2s infinite ease-in-out; }
+  .bubble-pending .dot:nth-child(2) { animation-delay: 0.2s; }
+  .bubble-pending .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+
+  form.composer {
+    flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--surface);
+    padding: 12px 24px 16px; display: flex; flex-direction: column; gap: 8px;
+  }
+  .composer-row { display: flex; gap: 8px; align-items: flex-end; }
+  .composer-row textarea {
+    flex: 1; resize: none; padding: 10px 12px; border: 1px solid #ccc; border-radius: 8px;
+    font-size: 14px; font-family: inherit; line-height: 1.4; min-height: 44px; max-height: 140px;
+  }
+  .composer-row button {
+    padding: 10px 20px; border: none; border-radius: 8px; background: var(--accent); color: #fff;
+    font-size: 13.5px; cursor: pointer; flex: 0 0 auto;
+  }
+  .composer-hint { font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <h1>专家私聊</h1>
+    <div class="sub">从圆桌讨论跳出来的隔离追问，不回流进正式记录</div>
+  </div>
+  <div class="conv-list">
+    {% for c in conversations %}
+    <div class="conv-item {{ 'active' if c.id == active_conversation_id else '' }}">
+      <a href="{{ url_for('private_chat_page', conversation_id=c.id) }}">
+        <div class="conv-title">@{{ agent_label(c.agent) }} · {{ c.title or '（无标题）' }}</div>
+        <div class="conv-meta">{{ c.updated_at }} · {{ c.messages|length }} 条</div>
+      </a>
+      <form class="conv-delete-form" method="post" action="{{ url_for('private_chat_delete', conversation_id=c.id) }}"
+            onsubmit="return confirm('确定删除这段私聊？没法恢复。');">
+        <button type="submit" title="删除">×</button>
+      </form>
+    </div>
+    {% endfor %}
+    {% if not conversations %}
+    <div class="conv-empty">还没有私聊——在圆桌讨论页面点某位专家的"私聊"按钮开始</div>
+    {% endif %}
+  </div>
+</aside>
+
+<div class="main-panel">
+
+<header>
+  <h1>{{ ('@' + agent_label(active_conversation.agent) + ' · ' + active_conversation.title) if active_conversation else '专家私聊' }}</h1>
+  <a href="{{ url_for('index') }}">← 返回圆桌讨论</a>
+</header>
+
+{% if private_chat_error %}
+<div class="banner banner-error">{{ private_chat_error }}</div>
+{% endif %}
+
+<main class="chat" id="chat">
+  {% if not active_conversation %}
+  <div class="empty-state">
+    <h2>还没有选中一段私聊</h2>
+    <p>私聊只能从一场已经结束的圆桌讨论里发起——在讨论页面某位专家的发言旁边点"私聊"，
+    会带着这位专家当时的判断作为上下文，单独跟他深聊，不会弄乱圆桌讨论本身的记录。</p>
+  </div>
+  {% endif %}
+
+  {% if active_conversation %}
+  {% for m in active_conversation.messages %}
+  {% if m.role == 'user' %}
+  <div class="msg-user">{{ m.content }}</div>
+  <div class="msg-meta">{{ m.timestamp }}</div>
+  {% else %}
+  <div class="msg-assistant">{{ m.content }}</div>
+  <div class="msg-meta assistant">{{ m.timestamp }}</div>
+  {% endif %}
+  {% endfor %}
+  {% endif %}
+
+  {% if current_run and current_run.conversation_id == active_conversation_id %}
+  <div class="bubble-pending" id="pendingRun">
+    <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    正在生成回复，通常需要 10-30 秒
+  </div>
+  {% endif %}
+</main>
+
+{% if active_conversation %}
+<form class="composer" id="composer" method="post" action="{{ url_for('private_chat_send') }}">
+  <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
+  <div class="composer-row">
+    <textarea name="message" placeholder="继续追问这位专家…" required></textarea>
+    <button type="submit" id="sendBtn">发送</button>
+  </div>
+  <div class="composer-hint" id="composerHint">每次提交都是真实的 DeepSeek 调用，会消耗额度</div>
+</form>
+{% endif %}
+
+</div>
+</div>
+
+<script>
+  var chat = document.getElementById('chat');
+  chat.scrollTop = chat.scrollHeight;
+
+  var composer = document.getElementById('composer');
+  if (composer) {
+    var sendBtn = document.getElementById('sendBtn');
+    var hint = document.getElementById('composerHint');
+    composer.addEventListener('submit', function () {
+      var message = composer.querySelector('textarea[name=message]').value.trim();
+      if (!message) return;
+      sendBtn.disabled = true;
+      sendBtn.textContent = '生成中…请稍候';
+      hint.textContent = '正在调用 DeepSeek 生成，请勿刷新或重复提交……';
+    });
+  }
+
+  if (document.getElementById('pendingRun')) {
+    var poll = setInterval(function () {
+      fetch('{{ url_for("private_chat_status") }}')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.running) { clearInterval(poll); window.location.reload(); }
+        })
+        .catch(function () {});
+    }, 3000);
+  }
+</script>
+
+</body>
+</html>

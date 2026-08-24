@@ -62,6 +62,33 @@
   .conv-delete-form button:hover { background: #fbe3e0; color: #8a2e20; }
   .conv-empty { padding: 16px 10px; font-size: 12px; color: var(--muted); text-align: center; }
 
+  .sidebar-tabs { display: flex; gap: 4px; padding: 10px 12px 0; }
+  .sidebar-tab {
+    flex: 1 1 auto; text-align: center; padding: 7px 8px; font-size: 12.5px; font-weight: 600;
+    color: var(--muted); text-decoration: none; border-radius: 8px 8px 0 0; border-bottom: 2px solid transparent;
+  }
+  .sidebar-tab.active { color: var(--accent); border-bottom-color: var(--accent); background: var(--bg); }
+  .sidebar-tab:not(.active):hover { color: var(--text); }
+  .tab-badge {
+    display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 4px; border-radius: 999px;
+    background: var(--warn-border); color: #fff; font-size: 10.5px; line-height: 16px;
+  }
+
+  .todo-item {
+    padding: 10px 12px; border-radius: 8px; margin: 0 4px 6px; background: var(--surface);
+    border: 1px solid var(--border); font-size: 12.5px;
+  }
+  .todo-desc { font-weight: 600; line-height: 1.4; margin-bottom: 4px; }
+  .todo-meta { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .todo-meta a { color: var(--muted); }
+  .todo-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .todo-actions form { flex: 1 1 auto; }
+  .todo-confirm, .todo-reject {
+    width: 100%; padding: 5px 0; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid;
+  }
+  .todo-confirm { border-color: #1e7a3c; background: transparent; color: #1e5c2f; }
+  .todo-reject { border-color: #b3402f; background: transparent; color: #8a2e20; }
+
   /* ---------- 主聊天区 ---------- */
   .main-panel { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
   header {
@@ -146,6 +173,58 @@
   .bubble-pending .dot:nth-child(3) { animation-delay: 0.4s; }
   @keyframes pulse { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
 
+  .mention-box { align-self: flex-start; }
+  .mention-form { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .mention-form select { padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
+  .mention-form input[type=text] {
+    padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12.5px; min-width: 220px;
+  }
+  .mention-form button {
+    padding: 4px 10px; border: 1px solid var(--accent); border-radius: 999px; background: transparent;
+    color: var(--accent); font-size: 12px; cursor: pointer;
+  }
+  .bubble-mention {
+    align-self: flex-start; max-width: 78%; background: #f6f1fb; border: 1px solid #6b3fa0;
+    padding: 10px 14px; border-radius: 2px 12px 12px 12px; font-size: 13px; line-height: 1.6;
+  }
+  .mention-tag { font-weight: 700; color: #6b3fa0; margin-right: 4px; }
+  .mention-answer { margin-top: 6px; white-space: pre-wrap; }
+
+  .bubble-decision {
+    align-self: stretch; background: #fff7e6; border: 1px solid #a35b00; color: #5c3d00;
+    padding: 12px 16px; border-radius: 10px; font-size: 13.5px; line-height: 1.6;
+  }
+  .decision-line { margin-bottom: 6px; }
+  .decision-steps { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .task-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; background: #fff;
+    border: 1px solid #e5d6b8; border-radius: 8px; padding: 6px 10px; font-size: 12.5px;
+  }
+  .task-desc { flex: 1 1 auto; }
+  .task-assignee { color: var(--muted); font-size: 12px; }
+  .task-status-label {
+    font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eee; color: #555;
+  }
+  .task-status-confirmed .task-status-label { background: #dff0e2; color: #1e5c2f; }
+  .task-status-rejected .task-status-label { background: #fbe3e0; color: #8a2e20; }
+  .task-status-done .task-status-label { background: #dbe7fb; color: #253a63; }
+  .task-action { display: inline; }
+  .task-confirm, .task-reject {
+    padding: 3px 10px; border-radius: 999px; font-size: 11.5px; cursor: pointer; border: 1px solid;
+  }
+  .task-confirm { border-color: #1e7a3c; background: transparent; color: #1e5c2f; }
+  .task-reject { border-color: #b3402f; background: transparent; color: #8a2e20; }
+  .task-artifact { font-size: 11px; color: var(--muted); }
+  .task-manual-hint { font-size: 11.5px; color: #a35b00; }
+  .task-feedback-form { display: flex; gap: 6px; flex: 1 1 100%; margin-top: 4px; }
+  .task-feedback-form input[type=text] {
+    flex: 1 1 auto; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px;
+  }
+  .task-feedback-btn {
+    padding: 3px 10px; border-radius: 999px; font-size: 11.5px; cursor: pointer;
+    border: 1px solid #6b3fa0; background: transparent; color: #6b3fa0;
+  }
+
   form.composer {
     flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--surface);
     padding: 12px 24px 16px; display: flex; flex-direction: column; gap: 8px;
@@ -186,6 +265,44 @@
     <h1>决策圆桌</h1>
     <div class="sub">super_brain · Python 直连 DeepSeek</div>
   </div>
+
+  <div class="sidebar-tabs">
+    <a class="sidebar-tab {{ 'active' if sidebar_tab != 'todo' else '' }}"
+       href="{{ url_for('index', conversation=active_conversation_id) }}">会话</a>
+    <a class="sidebar-tab {{ 'active' if sidebar_tab == 'todo' else '' }}"
+       href="{{ url_for('index', conversation=active_conversation_id, tab='todo') }}">
+      待办{% if pending_tasks %}<span class="tab-badge">{{ pending_tasks|length }}</span>{% endif %}
+    </a>
+  </div>
+
+  {% if sidebar_tab == 'todo' %}
+  <div class="conv-list">
+    {% for t in pending_tasks %}
+    <div class="todo-item">
+      <div class="todo-desc">{{ t.description }}</div>
+      {% if t.assignee_agent %}<div class="todo-meta">→ {{ agent_label(t.assignee_agent) }}</div>{% endif %}
+      <div class="todo-meta">来自：<a href="{{ url_for('index', conversation=t.conversation_id) }}">{{ t.question }}</a></div>
+      <div class="todo-actions">
+        <form method="post" action="{{ url_for('task_status_update', task_id=t.id) }}">
+          <input type="hidden" name="conversation_id" value="{{ t.conversation_id }}">
+          <input type="hidden" name="tab" value="todo">
+          <input type="hidden" name="status" value="confirmed">
+          <button type="submit" class="todo-confirm">确认</button>
+        </form>
+        <form method="post" action="{{ url_for('task_status_update', task_id=t.id) }}">
+          <input type="hidden" name="conversation_id" value="{{ t.conversation_id }}">
+          <input type="hidden" name="tab" value="todo">
+          <input type="hidden" name="status" value="rejected">
+          <button type="submit" class="todo-reject">否掉</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+    {% if not pending_tasks %}
+    <div class="conv-empty">没有待确认的任务</div>
+    {% endif %}
+  </div>
+  {% else %}
   <a class="new-conv-btn" href="{{ url_for('index', new=1) }}">+ 新建会话</a>
   <div class="conv-list">
     {% for c in conversations %}
@@ -204,6 +321,7 @@
     <div class="conv-empty">还没有会话，点上面"+ 新建会话"开始</div>
     {% endif %}
   </div>
+  {% endif %}
 </aside>
 
 <div class="main-panel">
@@ -212,6 +330,7 @@
   <h1>{{ active_conversation.title if active_conversation else '新建会话' }}
     <span>{% if active_conversation %}{{ active_conversation.turns|length }} 轮讨论{% else %}尚未开始{% endif %}</span>
   </h1>
+  <a href="{{ url_for('private_chat_list') }}">专家私聊</a>
   <a href="{{ url_for('admin') }}">运维（inbox / 发布通道）→</a>
 </header>
 
@@ -267,6 +386,89 @@
       </div>
       {% endfor %}
     </div>
+
+    <div class="mention-box">
+      <form class="mention-form" method="post" action="{{ url_for('roundtable_mention') }}">
+        <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
+        <span>@</span>
+        <select name="agent">
+          {% for n in turn.agents %}<option value="{{ n }}">{{ agent_label(n) }}</option>{% endfor %}
+        </select>
+        <input type="text" name="message" placeholder="单独问这位专家一个针对性问题…" required>
+        <button type="submit">发送（留在这场讨论记录里）</button>
+      </form>
+      <form class="mention-form" method="post" action="{{ url_for('private_chat_start') }}" style="margin-top:6px;">
+        <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
+        <input type="hidden" name="turn_index" value="{{ loop.index0 }}">
+        <span>私聊</span>
+        <select name="agent">
+          {% for n in turn.agents %}<option value="{{ n }}">{{ agent_label(n) }}</option>{% endfor %}
+        </select>
+        <input type="text" name="message" placeholder="跳出去单独深聊，不留在这场讨论记录里…" required>
+        <button type="submit">开始私聊</button>
+      </form>
+    </div>
+    {% if active_conversation.mentions %}
+    {% for m in active_conversation.mentions %}
+    {% if m.agent in turn.agents %}
+    <div class="bubble-mention">
+      <span class="mention-tag">@{{ agent_label(m.agent) }}</span> {{ m.message }}
+      <div class="mention-answer">{{ m.answer }}</div>
+    </div>
+    {% endif %}
+    {% endfor %}
+    {% endif %}
+
+    {% if turn.decision %}
+    <div class="round-label">Round 3 · 决策收敛</div>
+    <div class="bubble-decision">
+      <div class="decision-line"><strong>结论：</strong>{{ turn.decision.decision }}</div>
+      {% if turn.decision.rationale %}<div class="decision-line"><strong>依据：</strong>{{ turn.decision.rationale }}</div>{% endif %}
+      {% if turn.task_ids %}
+      <div class="decision-steps">
+        {% for tid in turn.task_ids %}
+        {% set t = get_task(tid) %}
+        {% if t %}
+        <div class="task-row task-status-{{ t.status }}">
+          <span class="task-desc">{{ t.description }}</span>
+          {% if t.assignee_agent %}<span class="task-assignee">→ {{ agent_label(t.assignee_agent) }}</span>{% endif %}
+          <span class="task-status-label">{{ t.status }}</span>
+          {% if t.artifact_path %}
+          <span class="task-artifact"><code>{{ t.artifact_path }}</code></span>
+          {% endif %}
+          {% if t.status == 'pending_confirmation' %}
+          <form class="task-action" method="post" action="{{ url_for('task_status_update', task_id=t.id) }}">
+            <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
+            <input type="hidden" name="status" value="confirmed">
+            <button type="submit" class="task-confirm">确认（会真正生成产物）</button>
+          </form>
+          <form class="task-action" method="post" action="{{ url_for('task_status_update', task_id=t.id) }}">
+            <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
+            <input type="hidden" name="status" value="rejected">
+            <button type="submit" class="task-reject">否掉</button>
+          </form>
+          {% elif t.status == 'confirmed' and not t.artifact_path %}
+          <span class="task-manual-hint">暂不支持自动生成，需人工完成</span>
+          <form class="task-action" method="post" action="{{ url_for('task_status_update', task_id=t.id) }}">
+            <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
+            <input type="hidden" name="status" value="done">
+            <button type="submit" class="task-confirm">标记为已完成</button>
+          </form>
+          {% endif %}
+          {% if t.status == 'done' and t.assignee_agent %}
+          <form class="task-feedback-form" method="post" action="{{ url_for('task_feedback', task_id=t.id) }}">
+            <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
+            <input type="text" name="feedback" placeholder="这份产物哪里不行？（会喂给定期复盘，用来改进 private.md）">
+            <button type="submit" class="task-feedback-btn">反馈</button>
+          </form>
+          {% endif %}
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
 
     {% if turn.minutes_path %}
     <div class="bubble-synthesis">正式会议纪要已生成：<code>{{ turn.minutes_path }}</code></div>
@@ -346,7 +548,7 @@
   var sendBtn = document.getElementById('sendBtn');
   var hint = document.getElementById('composerHint');
   var AGENT_LABELS = {{ agent_labels_json | safe }};
-  var AGENT_COLORS = {strategy: '#6b3fa0', finance: '#0e6e76', marketing: '#a35b00', legal: '#3f5b7a'};
+  var AGENT_COLORS = {strategy: '#6b3fa0', finance: '#0e6e76', marketing: '#a35b00', legal: '#3f5b7a', synthesis: '#a35b00'};
   var ORIGINAL_SEND_LABEL = sendBtn.textContent;
 
   function labelOf(name) { return AGENT_LABELS[name] || name; }
@@ -381,10 +583,11 @@
     turnDiv.appendChild(userBubble);
     turnDiv.appendChild(meta);
 
-    ['1', '2'].forEach(function (roundNum) {
+    var ROUND_LABELS = { '1': 'Round 1 · 独立分析（互相看不见）', '2': 'Round 2 · 交叉校验', '3': 'Round 3 · 决策收敛' };
+    ['1', '2', '3'].forEach(function (roundNum) {
       var label = document.createElement('div');
       label.className = 'round-label';
-      label.textContent = roundNum === '1' ? 'Round 1 · 独立分析（互相看不见）' : 'Round 2 · 交叉校验';
+      label.textContent = ROUND_LABELS[roundNum];
       var row = document.createElement('div');
       row.className = 'agent-row';
       row.setAttribute('data-round', roundNum);

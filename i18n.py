@@ -18,6 +18,9 @@ AGENT_LABELS_ZH = {
     "ops-assistant": "运营助手",
     "ship": "代码 & 公众号发布",
     "coordinator": "协调者",
+    "synthesis": "决策收敛",
+    "aigc-trends": "AIGC趋势专家",
+    "commercialization": "商业化顾问",
 }
 
 _CATALOG = {

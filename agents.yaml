@@ -90,11 +90,37 @@ agents:
     output_requires_citation: true
     disclaimer_required: true
 
+  - name: aigc-trends
+    type: roundtable
+    description: AIGC 趋势与最佳实践——判断某个生成式 AI 趋势/工具/打法值不值得跟进，兼顾战略布道和技术落地指导
+    knowledge_path: agents/aigc-trends/private.md
+    sources:
+      - "李开复《AI·未来》AI Superpowers"
+      - "李开复、陈楸帆《AI 2041：10个未来场景》"
+      - "Kevin Kelly《必然》The Inevitable"
+      - "Andrew Ng 公开方法论（The Batch newsletter / AI Transformation Playbook）"
+    output_requires_citation: true
+
+  - name: commercialization
+    type: roundtable
+    description: super_brain 自身的产品化判断——这套系统该怎么迭代才有真实商业价值，不分析 CEO 其他生意的通用战略
+    knowledge_path: agents/commercialization/private.md
+    sources:
+      - "Rob Fitzpatrick《提问的艺术》The Mom Test"
+      - "April Dunford《Obviously Awesome》"
+      - "独立开发者社区常见产品化打法（MicroConf / Indie Hackers 系）"
+    output_requires_citation: true
+
   - name: toutiao
     type: execution
     description: 生成头条号文章草稿（调用 G:\code\toutiao-agent 的 DeepSeek 逻辑），不涉及登录/发布
     knowledge_path: agents/toutiao/private.md
     executor: toutiao_draft
+
+  - name: content-strategist
+    type: execution
+    description: writer/toutiao/video-prompt 生成正式内容前的上游规划——产出策划简报（钩子/节奏/取舍），不产出成品文案，由 executors.py 在生成头条/公众号文案前自动调用
+    knowledge_path: agents/content-strategist/private.md
 
   - name: writer
     type: execution
