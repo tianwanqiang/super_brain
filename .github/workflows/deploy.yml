@@ -9,6 +9,15 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: 调试 - 检查 SERVER_SSH_KEY 是否正确传入（不打印真实内容，GitHub 会自动遮蔽密钥字符串）
+        run: |
+          echo "SERVER_SSH_KEY 长度：${#SSH_KEY}"
+          echo "$SSH_KEY" | head -1
+          echo "$SSH_KEY" | tail -1
+          echo "包含 BEGIN 标记的行数：$(echo "$SSH_KEY" | grep -c 'BEGIN OPENSSH PRIVATE KEY' || true)"
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+
       - name: SSH 到服务器拉最新代码并重启容器
         uses: appleboy/ssh-action@v1
         with:
