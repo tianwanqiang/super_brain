@@ -2,8 +2,12 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
+# 默认用腾讯云自己的 PyPI 镜像——服务器部署在腾讯云上，同网络内直连比走境外源快得多
+# （RAG 依赖 torch/transformers 这些包体积大，走境外源经常慢到超时）。真要在别的地方
+# 构建这个镜像，可以用 --build-arg PIP_INDEX_URL=https://pypi.org/simple 覆盖回官方源。
+ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt gunicorn
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r requirements.txt gunicorn
 
 COPY . .
 
