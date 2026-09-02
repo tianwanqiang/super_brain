@@ -21,6 +21,9 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          # 默认 10 分钟——RAG 依赖（torch/sentence-transformers）在配置吃紧的服务器上
+          # docker build 装依赖经常超过这个时间，2026-09-02 那次就是被这个默认值打断的。
+          command_timeout: 30m
           script: |
             set -e
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
