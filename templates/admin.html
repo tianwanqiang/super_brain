@@ -134,6 +134,25 @@
   <button type="submit">立即手动跑一次（测试用，会真实花额度）</button>
 </form>
 
+<h2>RAG 检索索引</h2>
+<p style="font-size:12.5px; color:#888;">
+  给每个专家的 private.md 建/重建检索索引——本地嵌入模型，零成本，不调用任何付费 API。
+  索引是从 private.md 派生出来的构建产物，特意没有进 git，新部署到一台机器上之后必须
+  手动点一次这个按钮才会有索引（第一次点会触发下载嵌入模型，约 95MB，需要服务器能连到
+  Hugging Face，连不上的话看下面报错，需要配镜像源）。
+</p>
+<form class="inline" method="post" action="{{ url_for('rag_rebuild_all') }}">
+  <button type="submit">重建全部专家的 RAG 索引</button>
+</form>
+{% if rag_rebuild_results %}
+<table>
+  <tr><th>Agent</th><th>结果</th></tr>
+  {% for name, result in rag_rebuild_results.items() %}
+  <tr><td>{{ agent_label(name) }}（{{ name }}）</td><td>{{ result }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
 <h2>机制 2 · 定期复盘</h2>
 <p style="font-size:12.5px; color:#888;">
   读一个 agent 的 lessons.md（圆桌型是 LLM 自我反思，执行型是事实记录）+ 现有 private.md，

@@ -69,6 +69,27 @@
 "Run workflow"），观察 Actions 日志——应该会自动 SSH 上服务器、`git pull`、重新构建
 镜像并重启容器。
 
+## RAG 功能上线（新增，需要额外一步）
+
+RAG 检索用的 `sentence-transformers`（本地嵌入模型）是新加的依赖，比之前的 Docker 镜像
+重不少（会带入 torch），构建时间和内存占用都会明显增加——你这台是"最便宜档"配置，具体
+扛不扛得住需要实测，如果 `docker compose up -d --build` 卡住/内存不足/被系统杀掉，把
+报错发给我。
+
+镜像重新构建好之后，RAG 索引**不会**跟着 `git pull` 自动出现——索引是从 `private.md`
+派生出来的构建产物，特意没有进 git（源文件在，索引可以随时重建）。需要手动做一次：
+
+1. 打开 `http://服务器IP:5151/admin`，找到"RAG 检索索引"这一块，点"重建全部专家的 RAG
+   索引"。
+2. 第一次点会触发下载嵌入模型（`BAAI/bge-small-zh-v1.5`，约 95MB，从 Hugging Face 下载）。
+   如果长时间卡住/超时，大概率又是跟 GitHub/Docker Hub 那次一样的境外直连问题，解法是
+   给 Hugging Face 也配一个国内镜像源——在 `docker-compose.yml` 的 `environment` 里加一行：
+   ```yaml
+   - HF_ENDPOINT=https://hf-mirror.com
+   ```
+   加完 `docker compose up -d`（不用重新 build）重启容器生效，再回 admin 页面重新点一次。
+3. 每个 agent 显示"N 条规则"就是建好了；显示"失败：xxx"的话把报错发给我。
+
 ## 之后的日常使用
 
 - 以后要更新代码：本机改完、推送到 GitHub，几分钟内服务器自动更新，不用手动登录服务器。

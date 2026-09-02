@@ -41,3 +41,8 @@ task_drafts/
 
 # 机制 2 定期复盘生成的建议（源头是 lessons.md，同样是运行时产物不是代码）
 agents/*/reviews/
+
+# RAG 检索索引——从 private.md 派生出来的构建产物（切块+向量），不是权威数据源，
+# private.md 变了会自动重建，不需要进版本控制（而且向量文件是二进制，不适合 git diff）
+agents/*/rag_chunks.json
+agents/*/rag_index.npy

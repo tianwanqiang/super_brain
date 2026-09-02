@@ -38,12 +38,13 @@ import executors
 import i18n
 import private_chat
 import publishers
+import rag
 import review
 import roundtable
 import tasks
 import video_prompt
 from log_setup import configure_logging
-from paths import DEEPSEEK_CONFIG_PATH
+from paths import AGENTS_DIR, DEEPSEEK_CONFIG_PATH
 
 configure_logging()
 logger = logging.getLogger("super_brain.ui")
@@ -388,6 +389,7 @@ def render_admin(**extra):
         review_agents=review_agents,
         review_state=review_state,
         last_daily_batch_date=_last_daily_batch_date,
+        rag_rebuild_results=session.pop("rag_rebuild_results", None),
         **extra,
     )
 
@@ -1060,6 +1062,30 @@ def review_apply():
         review.apply_review(agent_name, review_path)
     except review.ReviewError as exc:
         session["roundtable_error"] = str(exc)
+    return redirect(url_for("admin"))
+
+
+@app.route("/admin/rag/rebuild", methods=["POST"])
+def rag_rebuild_all():
+    """给所有已注册 agent 建/重建 RAG 索引——零成本（本地嵌入模型，不调用任何付费 API），
+    但第一次调用会触发模型下载（~95MB，从 Hugging Face），需要服务器有出网能力；如果连不上，
+    这里会捕获异常按 agent 逐个报告，不会因为一个失败就中断其余 agent 的建索引。
+    这是新部署到一台机器后必须手动点一次的步骤——RAG 索引是从 private.md 派生出来的构建
+    产物，特意没有进 git（见 .gitignore），git pull 不会把它带过来，只能在目标机器上现建。
+    """
+    registry = agent_registry.load_agent_registry()
+    results = {}
+    for name, entry in registry.items():
+        private_path = AGENTS_DIR / name / "private.md"
+        if not private_path.exists():
+            continue
+        try:
+            n = rag.build_index(name, force=True)
+            results[name] = f"{n} 条规则"
+        except Exception as exc:
+            logger.exception(f"UI：{name} 的 RAG 索引重建失败")
+            results[name] = f"失败：{exc}"
+    session["rag_rebuild_results"] = results
     return redirect(url_for("admin"))
 
 

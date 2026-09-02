@@ -1,2 +1,7 @@
 pyyaml>=6.0
 flask>=3.0
+
+# RAG 检索基础设施——本地跑嵌入模型，DeepSeek 没有 embeddings 接口，这是唯一不花钱的路径。
+# 注意：这会带入 torch，Docker 镜像体积和内存占用会明显增加，服务器配置吃紧时要留意。
+sentence-transformers>=3.0
+numpy>=1.26
