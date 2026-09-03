@@ -46,3 +46,6 @@ agents/*/reviews/
 # private.md 变了会自动重建，不需要进版本控制（而且向量文件是二进制，不适合 git diff）
 agents/*/rag_chunks.json
 agents/*/rag_index.npy
+
+# RAG 真实检索历史——个人使用数据，不是代码，供分析看板用
+agents/*/rag_retrieval_log.jsonl

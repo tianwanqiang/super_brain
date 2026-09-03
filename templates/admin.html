@@ -144,6 +144,7 @@
 <form class="inline" method="post" action="{{ url_for('rag_rebuild_all') }}">
   <button type="submit">重建全部专家的 RAG 索引</button>
 </form>
+<p style="margin-top:8px;"><a href="{{ url_for('rag_analytics') }}">查看 RAG 分析看板 →</a></p>
 {% if rag_rebuild_results %}
 <table>
   <tr><th>Agent</th><th>结果</th></tr>

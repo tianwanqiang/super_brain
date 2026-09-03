@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{ agent_label_text }} · RAG 分析 · super_brain</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --surface: #fcfcfb; --page: #f9f9f7; --text-primary: #0b0b0b; --text-secondary: #52514e;
+    --muted: #898781; --grid: #e1e0d9; --border: rgba(11,11,11,0.10);
+    --blue-450: #2a78d6; --blue-300: #6da7ec; --blue-150: #b7d3f6; --muted-bar: #c3c2b7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: var(--page); color: var(--text-primary);
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 24px 60px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+  h1 { font-size: 20px; margin: 0; }
+  header a { color: var(--text-secondary); font-size: 12.5px; text-decoration: none; }
+  header a:hover { color: var(--blue-450); text-decoration: underline; }
+  .sub { color: var(--text-secondary); font-size: 12.5px; margin-bottom: 24px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 24px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .tile .value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .tile .label { font-size: 11.5px; color: var(--text-secondary); margin-top: 2px; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 20px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 4px; }
+  .card .card-sub { font-size: 11.5px; color: var(--text-secondary); margin-bottom: 14px; }
+  .chart-box { position: relative; height: 260px; }
+  .chart-box.tall { height: 420px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--grid); }
+  th { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: var(--muted); font-size: 13px; padding: 20px 0; text-align: center; }
+  .zero-tag { color: var(--muted); font-size: 10.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>{{ agent_label_text }} · RAG 分析</h1>
+    <a href="{{ url_for('rag_analytics') }}">← 返回总览</a>
+  </header>
+  <div class="sub">打开这个页面本身不会被计入检索统计</div>
+
+  <div class="tiles">
+    <div class="tile"><div class="value">{{ stats.chunk_count or 0 }}</div><div class="label">规则条数</div></div>
+    <div class="tile"><div class="value">{{ stats.avg_length or 0 }}</div><div class="label">平均长度（字）</div></div>
+    <div class="tile"><div class="value">{{ stats.min_length or 0 }} - {{ stats.max_length or 0 }}</div><div class="label">长度范围</div></div>
+    <div class="tile"><div class="value">{{ query_count }}</div><div class="label">历史检索次数</div></div>
+  </div>
+
+  {% if stats.by_section %}
+  <div class="card">
+    <h2>知识密度分布（按来源分类）</h2>
+    <div class="card-sub">哪个分类条数明显偏少，说明这本书/这个框架在这里提炼得不够深，值得回去补</div>
+    <div class="chart-box"><canvas id="sectionChart"></canvas></div>
+  </div>
+  {% endif %}
+
+  {% if query_count == 0 %}
+  <div class="card">
+    <h2>检索命中 &amp; 相似度分布</h2>
+    <div class="empty">还没有真实检索记录——只有圆桌讨论用 <code>use_rag=True</code> 真跑过一次，这里才会有数据</div>
+  </div>
+  {% else %}
+  <div class="card">
+    <h2>相似度分数分布</h2>
+    <div class="card-sub">分数普遍偏低（集中在左边），说明知识库跟实际问题匹配度不够，该往内容/切块方向查；分数高但回答质量差，问题更可能出在规则写法本身</div>
+    <div class="chart-box"><canvas id="similarityChart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>每条规则被检索命中的次数</h2>
+    <div class="card-sub">灰色是从没被命中过的规则——可能太生僻、跟实际问题对不上，也可能是冗余的，值得看一眼是不是该改写或删掉</div>
+    <div class="chart-box tall"><canvas id="hitCountChart"></canvas></div>
+  </div>
+
+  <div class="card">
+    <h2>最近的检索记录</h2>
+    <table>
+      <thead><tr><th>时间</th><th>查询</th><th>命中最高分</th></tr></thead>
+      <tbody>
+        {% for q in recent_queries %}
+        <tr>
+          <td>{{ q.timestamp }}</td>
+          <td>{{ q.query }}</td>
+          <td class="num">{{ "%.3f"|format(q.hits[0].similarity) if q.hits else "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+  var bySection = {{ (stats.by_section or {})|tojson }};
+  var sectionEl = document.getElementById('sectionChart');
+  if (sectionEl) {
+    var sectionLabels = Object.keys(bySection);
+    new Chart(sectionEl, {
+      type: 'bar',
+      data: {
+        labels: sectionLabels.map(function (s) { return s.length > 20 ? s.slice(0, 20) + '…' : s; }),
+        datasets: [{ data: sectionLabels.map(function (s) { return bySection[s]; }), backgroundColor: '#2a78d6', borderRadius: 4, barThickness: 16 }],
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { title: function (items) { return sectionLabels[items[0].dataIndex]; } } } },
+        scales: { x: { beginAtZero: true, grid: { color: '#e1e0d9' }, ticks: { color: '#898781', stepSize: 1 } }, y: { grid: { display: false }, ticks: { color: '#52514e' } } },
+      },
+    });
+  }
+
+  var bins = {{ similarity_bins|tojson }};
+  var simEl = document.getElementById('similarityChart');
+  if (simEl) {
+    new Chart(simEl, {
+      type: 'bar',
+      data: {
+        labels: ['0.0', '0.1', '0.2', '0.3', '0.4', '0.5', '0.6', '0.7', '0.8', '0.9'],
+        datasets: [{ data: bins, backgroundColor: '#2a78d6', borderRadius: 4 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#898781' }, title: { display: true, text: '相似度区间', color: '#898781', font: { size: 11 } } },
+          y: { beginAtZero: true, grid: { color: '#e1e0d9' }, ticks: { color: '#898781', stepSize: 1 } },
+        },
+      },
+    });
+  }
+
+  var hitData = {{ chunk_hits_sorted|tojson }};
+  var hitEl = document.getElementById('hitCountChart');
+  if (hitEl) {
+    new Chart(hitEl, {
+      type: 'bar',
+      data: {
+        labels: hitData.map(function (h) { return '#' + h[0]; }),
+        datasets: [{
+          data: hitData.map(function (h) { return h[1]; }),
+          backgroundColor: hitData.map(function (h) { return h[1] > 0 ? '#2a78d6' : '#c3c2b7'; }),
+          borderRadius: 3, barThickness: 10,
+        }],
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true, grid: { color: '#e1e0d9' }, ticks: { color: '#898781', stepSize: 1 } }, y: { grid: { display: false }, ticks: { color: '#52514e', font: { size: 10 } } } },
+      },
+    });
+  }
+</script>
+</body>
+</html>

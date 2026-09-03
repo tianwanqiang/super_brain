@@ -1089,6 +1089,57 @@ def rag_rebuild_all():
     return redirect(url_for("admin"))
 
 
+@app.route("/admin/rag/analytics")
+def rag_analytics():
+    """RAG 系统分析看板——总览页：每个已建索引的 agent 的规则条数、历史检索次数，
+    零成本（全是读本地文件+算统计，不调用任何模型）。
+    """
+    agents = rag.list_indexed_agents()
+    overview = []
+    for name in agents:
+        stats = rag.get_index_stats(name)
+        log = rag.get_retrieval_log(name)
+        overview.append({
+            "name": name,
+            "label": i18n.agent_label(name),
+            "chunk_count": stats.get("chunk_count", 0),
+            "avg_length": stats.get("avg_length", 0),
+            "query_count": len(log),
+        })
+    return render_template("rag_analytics.html", overview=overview)
+
+
+@app.route("/admin/rag/analytics/<agent_name>")
+def rag_analytics_detail(agent_name):
+    """单个 agent 的检索质量细节：按分类的规则密度分布、每条规则被命中次数、
+    历史检索相似度分数分布。log=False 的这次读取本身不计入统计（见 rag.search 的
+    log 参数说明），避免"打开分析页"这个动作污染了它自己要分析的数据。
+    """
+    stats = rag.get_index_stats(agent_name)
+    hit_counts = rag.get_chunk_hit_counts(agent_name)
+    scores = rag.get_similarity_scores(agent_name)
+    log = rag.get_retrieval_log(agent_name)
+
+    # 相似度分布分箱（0.0-1.0，每 0.1 一箱），Chart.js 直接吃这个结构画柱状图
+    bins = [0] * 10
+    for s in scores:
+        idx = min(int(s * 10), 9)
+        bins[idx] += 1
+
+    chunk_hits_sorted = sorted(hit_counts.items(), key=lambda kv: -kv[1])
+
+    return render_template(
+        "rag_analytics_detail.html",
+        agent_name=agent_name,
+        agent_label_text=i18n.agent_label(agent_name),
+        stats=stats,
+        chunk_hits_sorted=chunk_hits_sorted,
+        similarity_bins=bins,
+        query_count=len(log),
+        recent_queries=list(reversed(log))[:20],
+    )
+
+
 @app.route("/inbox/new", methods=["POST"])
 def inbox_new():
     to = request.form.get("to", "").strip()
