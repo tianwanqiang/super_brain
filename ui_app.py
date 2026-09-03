@@ -44,7 +44,7 @@ import roundtable
 import tasks
 import video_prompt
 from log_setup import configure_logging
-from paths import AGENTS_DIR, DEEPSEEK_CONFIG_PATH
+from paths import AGENTS_DIR, DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
 
 configure_logging()
 logger = logging.getLogger("super_brain.ui")
@@ -187,7 +187,6 @@ def _pop_draft_error() -> str | None:
         return message
 
 
-SUPER_BRAIN = Path(r"G:\code\super_brain")
 INBOX = SUPER_BRAIN / "inbox.md"
 LOG_FILE = SUPER_BRAIN / "logs" / "super_brain.log"
 DISPATCHER_SCRIPT = SUPER_BRAIN / "dispatcher.py"

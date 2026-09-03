@@ -20,12 +20,16 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from paths import OPC_ROOT, SUPER_BRAIN
+
 logger = logging.getLogger("super_brain.publishers")
 
-SUPER_BRAIN = Path(r"G:\code\super_brain")
 CONFIG_PATH = SUPER_BRAIN / "config.json"
-TOUTIAO_SCRIPT = Path(r"G:\code\toutiao-agent\Generate-ToutiaoDraft.ps1")
-TOUTIAO_DRAFTS_DIR_DEFAULT = Path(r"G:\code\toutiao-agent\drafts")
+# 头条草稿这条路径本质是调用 toutiao-agent（兄弟项目）的 PowerShell 脚本——这是它自身的
+# 实现方式决定的，只能在 Windows 上跑，不是路径写法能解决的问题。服务器（Linux）上调用
+# 这个功能会在 subprocess 那一步明确报错（找不到 powershell），不会是这种诡异的路径拼接错误。
+TOUTIAO_SCRIPT = OPC_ROOT / "toutiao-agent" / "Generate-ToutiaoDraft.ps1"
+TOUTIAO_DRAFTS_DIR_DEFAULT = OPC_ROOT / "toutiao-agent" / "drafts"
 
 
 class PublishError(Exception):
@@ -157,7 +161,7 @@ def publish_toutiao_draft(date: str) -> Path | None:
         logger.error(f"找不到 {TOUTIAO_SCRIPT}")
         raise PublishError(f"找不到 {TOUTIAO_SCRIPT}")
 
-    opc_path = Path(r"G:\code") / f"opc_{date}.md"
+    opc_path = OPC_ROOT / f"opc_{date}.md"
     if not opc_path.exists():
         logger.info(f"头条：{opc_path} 不存在，安全跳过")
         return None
