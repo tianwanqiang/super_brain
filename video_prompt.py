@@ -13,8 +13,8 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_registry import load_agent_registry, load_private_context, log_execution
-from llm_client import call_deepseek_messages
-from paths import DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
+from llm_client import DeepSeekConfigError, call_deepseek_messages, load_deepseek_api_key
+from paths import SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.video_prompt")
 
@@ -88,9 +88,10 @@ def send_message(conversation_id: str, user_message: str) -> dict:
     if data is None:
         raise VideoPromptError(f"会话不存在：{conversation_id}")
 
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        raise VideoPromptError(f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}）")
-    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
+    try:
+        api_key = load_deepseek_api_key()
+    except DeepSeekConfigError as exc:
+        raise VideoPromptError(str(exc)) from exc
 
     registry = load_agent_registry()
     system_context = load_private_context("video-prompt", registry)

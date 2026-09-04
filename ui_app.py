@@ -36,6 +36,7 @@ import digest
 import dispatcher
 import executors
 import i18n
+import llm_client
 import private_chat
 import publishers
 import rag
@@ -44,7 +45,7 @@ import roundtable
 import tasks
 import video_prompt
 from log_setup import LOG_FILE, configure_logging
-from paths import AGENTS_DIR, DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
+from paths import AGENTS_DIR, SUPER_BRAIN
 
 configure_logging()
 logger = logging.getLogger("super_brain.ui")
@@ -596,12 +597,10 @@ def minutes_draft():
 
     def _worker():
         try:
-            api_key = json.loads(
-                DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig")
-            )["DEEPSEEK_API_KEY"]
+            api_key = llm_client.load_deepseek_api_key()
             result = executors.execute_ops_assistant_from_minutes(minutes_path, api_key)
             persist_draft_log(minutes_path, result)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, llm_client.DeepSeekConfigError) as exc:
             logger.warning(f"UI：草稿生成失败：{exc}")
             _set_draft_error(str(exc))
         except Exception:
@@ -687,12 +686,11 @@ def task_status_update(task_id):
     if status == "confirmed":
         task = next((t for t in tasks.load_tasks() if t["id"] == task_id), None)
         if task is not None:
-            if not DEEPSEEK_CONFIG_PATH.exists():
-                session["roundtable_error"] = (
-                    f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}），产物没有生成，任务停在 confirmed。"
-                )
+            try:
+                api_key = llm_client.load_deepseek_api_key()
+            except llm_client.DeepSeekConfigError as exc:
+                session["roundtable_error"] = f"{exc}，产物没有生成，任务停在 confirmed。"
             else:
-                api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
                 try:
                     artifact = executors.generate_task_artifact(task, api_key)
                     tasks.update_task_status(task_id, "done", artifact_path=artifact)
@@ -932,10 +930,11 @@ _last_daily_batch_date: str | None = None
 
 def _run_daily_batch_once(trigger_label: str) -> None:
     global _last_daily_batch_date
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        logger.warning(f"每日批处理（{trigger_label}）：找不到 DeepSeek 配置，跳过")
+    try:
+        api_key = llm_client.load_deepseek_api_key()
+    except llm_client.DeepSeekConfigError as exc:
+        logger.warning(f"每日批处理（{trigger_label}）：{exc}，跳过")
         return
-    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
     try:
         out_path = digest.run_daily_batch(api_key=api_key)
         logger.info(f"每日批处理（{trigger_label}）完成：{out_path}")
@@ -1065,10 +1064,11 @@ def review_generate():
     """机制 2·定期复盘——真实调用 DeepSeek，读这个 agent 的 lessons.md + 现有 private.md，
     生成一份调整建议，落盘成独立文件，不会碰 private.md 本身。"""
     agent_name = request.form.get("agent", "").strip()
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        session["roundtable_error"] = f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}）"
+    try:
+        api_key = llm_client.load_deepseek_api_key()
+    except llm_client.DeepSeekConfigError as exc:
+        session["roundtable_error"] = str(exc)
         return redirect(url_for("admin"))
-    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
     try:
         review.generate_review_suggestion(agent_name, api_key)
     except review.ReviewError as exc:

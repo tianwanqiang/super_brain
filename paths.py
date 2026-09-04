@@ -21,8 +21,12 @@ AGENTS_CONFIG_PATH = SUPER_BRAIN / "agents.yaml"
 DISPATCH_LOG_DIR = SUPER_BRAIN / "dispatch_log"
 OPC_ROOT = Path(os.environ.get("OPC_ROOT_DIR", r"G:\code"))
 
-# 本机默认复用 toutiao-agent 已经配好的 DeepSeek Key，避免重复要用户再配一份。
-# 服务器部署场景下 toutiao-agent 这个兄弟项目不存在，通过 DEEPSEEK_CONFIG_PATH 环境变量
-# 指向 super_brain 自己目录下的 config.json（跟 ui_app.py/publishers.py 用的是同一个文件，
-# 只要在里面补一个 DEEPSEEK_API_KEY 字段）。
-DEEPSEEK_CONFIG_PATH = Path(os.environ.get("DEEPSEEK_CONFIG_PATH", r"G:\code\toutiao-agent\config.json"))
+# 2026-09-04 以前，本机默认复用 toutiao-agent 项目已经配好的 DeepSeek Key，避免重复
+# 要用户再配一份——但这导致本机和服务器实际读的不是同一份文件：服务器上 Docker 会把
+# DEEPSEEK_CONFIG_PATH 显式覆盖成 super_brain 自己的 config.json，本机却默认指向另一个
+# 兄弟项目的文件，config_check.py 这类"校验 super_brain/config.json 是否健全"的工具在
+# 本机测的其实是不会被真正用到的文件，容易产生"检查过了但其实没测对文件"的假安全感。
+# 圆桌讨论是 super_brain 的核心功能，理应把这份凭据当成 super_brain 自己的配置管，不是
+# 靠隐式复用别的项目——默认值改成 super_brain 自己的 config.json（SUPER_BRAIN / "config.json"，
+# 跟 ui_app.py/rag.py/config_check.py 用的是同一份文件），环境变量仍然可以覆盖。
+DEEPSEEK_CONFIG_PATH = Path(os.environ.get("DEEPSEEK_CONFIG_PATH", str(SUPER_BRAIN / "config.json")))

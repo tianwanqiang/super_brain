@@ -30,9 +30,9 @@ from datetime import datetime
 
 from agent_registry import build_system_prompt, load_agent_registry, load_private_context, known_agent_names
 from executors import EXECUTORS
-from llm_client import call_deepseek
+from llm_client import DeepSeekConfigError, call_deepseek, load_deepseek_api_key
 from log_setup import configure_logging
-from paths import DEEPSEEK_CONFIG_PATH, DISPATCH_LOG_DIR, INBOX
+from paths import DISPATCH_LOG_DIR, INBOX
 
 logger = logging.getLogger("super_brain.dispatcher")
 
@@ -154,12 +154,13 @@ def main():
 
     api_key = None
     if not dry_run:
-        if not DEEPSEEK_CONFIG_PATH.exists():
-            logger.error(f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}），无法起草建议，仅列出待处理留言：")
+        try:
+            api_key = load_deepseek_api_key()
+        except DeepSeekConfigError as exc:
+            logger.error(f"{exc}，无法起草建议，仅列出待处理留言：")
             for e in pending:
                 logger.info(f"  [{e['to']}] {e.get('from', '?')} @ {e.get('time', '?')}: {e.get('message', '')}")
             return
-        api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
         DISPATCH_LOG_DIR.mkdir(exist_ok=True)
 
     for agent, messages in by_agent.items():

@@ -30,14 +30,16 @@ from agent_registry import load_agent_registry, load_private_context, log_execut
 from functools import partial
 import rag
 from llm_client import (
+    DeepSeekConfigError,
     call_deepseek,
     call_deepseek_stream,
     call_deepseek_with_tools,
     call_deepseek_with_tools_stream,
+    load_deepseek_api_key,
     load_tavily_api_key,
 )
 from log_setup import configure_logging
-from paths import AGENTS_DIR, DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
+from paths import AGENTS_DIR, SUPER_BRAIN
 from tasks import add_tasks_from_decision
 
 logger = logging.getLogger("super_brain.roundtable")
@@ -415,9 +417,10 @@ def ask_agent_mention(conversation_id: str, agent_name: str, message: str) -> di
     if agent_name not in (conversation.get("agents") or []):
         raise RoundtableError(f"'{agent_name}' 没有参与这场会话，不能 @ 单独提问")
 
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        raise RoundtableError(f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}）")
-    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
+    try:
+        api_key = load_deepseek_api_key()
+    except DeepSeekConfigError as exc:
+        raise RoundtableError(str(exc)) from exc
 
     private_context = load_private_context(agent_name, registry)
     system_prompt = _mention_system_prompt(agent_name, entry, private_context, conversation, message)
@@ -539,9 +542,10 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
     if len(agent_names) < 2:
         raise RoundtableError("圆桌至少需要 2 位专家，一个人自己跟自己交叉校验没有意义")
 
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        raise RoundtableError(f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}）")
-    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
+    try:
+        api_key = load_deepseek_api_key()
+    except DeepSeekConfigError as exc:
+        raise RoundtableError(str(exc)) from exc
 
     prior_turns: list[dict] = []
     if conversation_id:

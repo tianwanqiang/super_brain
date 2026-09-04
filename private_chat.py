@@ -19,8 +19,8 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_registry import load_agent_registry, load_private_context, log_execution
-from llm_client import call_deepseek_messages
-from paths import DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
+from llm_client import DeepSeekConfigError, call_deepseek_messages, load_deepseek_api_key
+from paths import SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.private_chat")
 
@@ -113,9 +113,10 @@ def send_message(conversation_id: str, user_message: str) -> dict:
         raise PrivateChatError(f"私聊会话不存在：{conversation_id}")
 
     agent_name = data["agent"]
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        raise PrivateChatError(f"找不到 DeepSeek 配置（{DEEPSEEK_CONFIG_PATH}）")
-    api_key = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))["DEEPSEEK_API_KEY"]
+    try:
+        api_key = load_deepseek_api_key()
+    except DeepSeekConfigError as exc:
+        raise PrivateChatError(str(exc)) from exc
 
     registry = load_agent_registry()
     entry = registry.get(agent_name, {})

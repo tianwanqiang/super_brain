@@ -13,9 +13,11 @@ RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r requirements.txt gunicorn
 
 COPY . .
 
+# DEEPSEEK_CONFIG_PATH 不用在这里单独设——paths.py 现在默认就是 SUPER_BRAIN / "config.json"，
+# 跟着 SUPER_BRAIN_DIR 自动解析成 /app/config.json，两个环境变量各设一份容易以后改一个
+# 忘了改另一个、悄悄读到不同的文件。
 ENV SUPER_BRAIN_DIR=/app \
     OPC_ROOT_DIR=/app \
-    DEEPSEEK_CONFIG_PATH=/app/config.json \
     SUPER_BRAIN_HOST=0.0.0.0 \
     SUPER_BRAIN_PORT=5151
 

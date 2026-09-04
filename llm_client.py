@@ -14,11 +14,87 @@ import json
 import logging
 import urllib.request
 
-from paths import SUPER_BRAIN
+from paths import DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.llm_client")
 
 TAVILY_CONFIG_PATH = SUPER_BRAIN / "config.json"
+
+
+class DeepSeekConfigError(Exception):
+    """DEEPSEEK_API_KEY 没配好时抛出——三种原因分开说清楚（文件不存在/JSON 格式错误/
+    字段缺失或为空），不像 2026-09-04 之前 9 处调用点各自重复的 3 行代码那样，只检查了
+    "文件存不存在"，格式错误或缺字段会直接冒出一段裸的 JSONDecodeError/KeyError 堆栈，
+    没人看得出具体是哪种问题。
+    """
+
+
+def load_deepseek_api_key() -> str:
+    """DEEPSEEK_API_KEY 是 super_brain 几乎所有功能（圆桌讨论、dispatcher 起草建议、
+    专家私聊、video-prompt、定期复盘……）的核心依赖，缺了就没法用——这里跟
+    load_tavily_api_key() 的"没配置就返回 None、调用方优雅降级"不一样：DeepSeek key
+    缺失不是可以降级的场景，直接抛出一个原因清楚的异常，调用方各自按自己的错误展示
+    习惯（RoundtableError/VideoPromptError/session 里的 roundtable_error 等）包一层。
+
+    这是 2026-09-04 那次"服务器 config.json 缺 DEEPSEEK_API_KEY，圆桌讨论一调用就抛裸
+    堆栈"事故之后，把原来分散在 9 个调用点的重复读取逻辑收拢到这一处的产物。
+    """
+    if not DEEPSEEK_CONFIG_PATH.exists():
+        raise DeepSeekConfigError(f"找不到 DeepSeek 配置文件：{DEEPSEEK_CONFIG_PATH}")
+    try:
+        config = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise DeepSeekConfigError(f"{DEEPSEEK_CONFIG_PATH} 读取/解析失败：{exc}") from exc
+    if not isinstance(config, dict):
+        raise DeepSeekConfigError(f"{DEEPSEEK_CONFIG_PATH} 内容不是一个 JSON 对象")
+    api_key = config.get("DEEPSEEK_API_KEY")
+    if not api_key or not isinstance(api_key, str) or not api_key.strip():
+        raise DeepSeekConfigError(f"{DEEPSEEK_CONFIG_PATH} 里没有配置 DEEPSEEK_API_KEY 字段（或者是空值）")
+    return api_key
+
+
+DEEPSEEK_MODEL_DEFAULT = "deepseek-v4-pro"
+DEEPSEEK_BASE_URL_DEFAULT = "https://api.deepseek.com/v1"
+DEEPSEEK_MAX_TOKENS_DEFAULT = 8000
+
+
+def load_deepseek_settings() -> dict:
+    """跟头条 agent（G:\\code\\toutiao-agent\\Generate-ToutiaoDraft.ps1）读 Model/MaxTokens/
+    BaseUrl 三个字段的逻辑完全一致，字段名也保持一致，不改名——config.json 里这三个都是
+    可选字段，存在且非空就用配置值覆盖内置默认值，缺了/是空值就静默用内置默认值，不报错。
+    跟 DEEPSEEK_API_KEY（硬性必需，缺了直接抛异常）不是一回事：模型/地址/token 上限
+    没配置也能跑，只是用内置的默认组合。
+
+    每次都重新读文件、不做进程内缓存——保持跟 load_deepseek_api_key()/load_tavily_api_key()
+    同样的"配置改了不用重启也能生效"的行为，配置文件很小，重复读取的开销可以忽略。
+    """
+    settings = {
+        "model": DEEPSEEK_MODEL_DEFAULT,
+        "base_url": DEEPSEEK_BASE_URL_DEFAULT,
+        "max_tokens": DEEPSEEK_MAX_TOKENS_DEFAULT,
+    }
+    if not DEEPSEEK_CONFIG_PATH.exists():
+        return settings
+    try:
+        config = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, OSError):
+        return settings
+    if not isinstance(config, dict):
+        return settings
+
+    if config.get("Model"):
+        settings["model"] = config["Model"]
+    if config.get("BaseUrl"):
+        settings["base_url"] = config["BaseUrl"]
+    if config.get("MaxTokens"):
+        try:
+            settings["max_tokens"] = int(config["MaxTokens"])
+        except (TypeError, ValueError):
+            logger.warning(
+                f"config.json 里的 MaxTokens 不是合法数字：{config['MaxTokens']!r}，"
+                f"用内置默认值 {DEEPSEEK_MAX_TOKENS_DEFAULT}"
+            )
+    return settings
 
 WEB_SEARCH_TOOL_SCHEMA = {
     "type": "function",
@@ -80,33 +156,48 @@ def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url
 
 
 def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
-                   model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
-                   max_tokens: int = 8000) -> str:
+                   model: str | None = None, base_url: str | None = None,
+                   max_tokens: int | None = None) -> str:
+    """model/base_url/max_tokens 不传（或传 None）时，从 config.json 的 Model/BaseUrl/
+    MaxTokens 三个可选字段读（见 load_deepseek_settings()）；显式传参数的调用方（比如
+    某些场景需要更小/更大的 max_tokens）优先级更高，配置值不会覆盖显式传入的值。
+    """
+    settings = load_deepseek_settings()
     return _call_deepseek_core(
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        api_key, model, base_url, max_tokens,
+        api_key, model or settings["model"], base_url or settings["base_url"],
+        max_tokens or settings["max_tokens"],
     )
 
 
 def call_deepseek_messages(messages: list[dict], api_key: str,
-                            model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
-                            max_tokens: int = 8000) -> str:
+                            model: str | None = None, base_url: str | None = None,
+                            max_tokens: int | None = None) -> str:
     """跟 call_deepseek 逻辑一致，只是直接接受完整的 messages 数组——多轮对话场景用
-    （比如 video-prompt 的迭代修改），不是每次都只有一组 system+user。
+    （比如 video-prompt 的迭代修改），不是每次都只有一组 system+user。model/base_url/
+    max_tokens 的配置覆盖规则跟 call_deepseek 一致。
     """
-    return _call_deepseek_core(messages, api_key, model, base_url, max_tokens)
+    settings = load_deepseek_settings()
+    return _call_deepseek_core(
+        messages, api_key, model or settings["model"], base_url or settings["base_url"],
+        max_tokens or settings["max_tokens"],
+    )
 
 
 def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
-                          model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
-                          max_tokens: int = 8000):
+                          model: str | None = None, base_url: str | None = None,
+                          max_tokens: int | None = None):
     """流式版本——逐块 yield {"type": "reasoning"|"content", "delta": str}，供 UI 实时渲染用。
     跟 call_deepseek() 是两条独立路径，不影响不需要实时展示的场景（lessons.md 写入、内部起草
-    建议等）继续用阻塞版本。
+    建议等）继续用阻塞版本。model/base_url/max_tokens 的配置覆盖规则跟 call_deepseek 一致。
 
     SSE 格式：每行 "data: {...}"，chunk 里 choices[0].delta 可能带 content 和/或
     reasoning_content（思考模型才有后者），最后一行是 "data: [DONE]"。
     """
+    settings = load_deepseek_settings()
+    model = model or settings["model"]
+    base_url = base_url or settings["base_url"]
+    max_tokens = max_tokens or settings["max_tokens"]
     body = json.dumps({
         "model": model,
         "max_tokens": max_tokens,
@@ -211,12 +302,17 @@ def tavily_search(query: str, api_key: str, max_results: int = 5) -> str:
 
 def call_deepseek_with_tools(system_prompt: str, user_prompt: str, api_key: str,
                               tavily_api_key: str | None = None,
-                              model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
-                              max_tokens: int = 8000, max_tool_rounds: int = 3) -> str:
+                              model: str | None = None, base_url: str | None = None,
+                              max_tokens: int | None = None, max_tool_rounds: int = 3) -> str:
     """带工具调用循环的版本——tavily_api_key 为空时不给模型 web_search 工具，退化成普通调用，
     不报错。有 key 时，模型可以主动请求搜索，真实执行后把结果传回去继续对话，最多循环
-    max_tool_rounds 次防止死循环（模型反复要求搜索、迟迟不给最终答案）。
+    max_tool_rounds 次防止死循环（模型反复要求搜索、迟迟不给最终答案）。model/base_url/
+    max_tokens 的配置覆盖规则跟 call_deepseek 一致。
     """
+    settings = load_deepseek_settings()
+    model = model or settings["model"]
+    base_url = base_url or settings["base_url"]
+    max_tokens = max_tokens or settings["max_tokens"]
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -286,14 +382,19 @@ def call_deepseek_with_tools(system_prompt: str, user_prompt: str, api_key: str,
 
 def call_deepseek_with_tools_stream(system_prompt: str, user_prompt: str, api_key: str,
                                      tavily_api_key: str | None = None,
-                                     model: str = "deepseek-v4-pro", base_url: str = "https://api.deepseek.com/v1",
-                                     max_tokens: int = 8000, max_tool_rounds: int = 3):
+                                     model: str | None = None, base_url: str | None = None,
+                                     max_tokens: int | None = None, max_tool_rounds: int = 3):
     """call_deepseek_with_tools 的流式版本——每一轮请求都用 stream=True，思考过程/正文
     逐块 yield（{"type": "reasoning"|"content", "delta": str}）；如果这一轮触发了工具调用
     （tool_calls 是分块传来的，按 index 累积拼成完整 JSON），真实执行后把结果传回去继续
     下一轮，不流式展示工具调用本身；直到模型给出不带 tool_calls 的最终答案，yield 一个
-    {"type": "done", "content": 完整正文} 结束。
+    {"type": "done", "content": 完整正文} 结束。model/base_url/max_tokens 的配置覆盖规则
+    跟 call_deepseek 一致。
     """
+    settings = load_deepseek_settings()
+    model = model or settings["model"]
+    base_url = base_url or settings["base_url"]
+    max_tokens = max_tokens or settings["max_tokens"]
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},

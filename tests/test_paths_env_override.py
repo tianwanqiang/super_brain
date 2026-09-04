@@ -92,3 +92,29 @@ def test_log_file_is_inside_log_dir():
         {"SUPER_BRAIN_DIR": "/opt/super_brain"},
     )
     assert out == "True"
+
+
+def test_deepseek_config_path_defaults_to_super_brains_own_config_json():
+    """回归测试：2026-09-04 之前，DEEPSEEK_CONFIG_PATH 本机默认指向兄弟项目 toutiao-agent
+    的 config.json，跟 super_brain 自己的 config.json（CONFIG_PATH/config_check.py 校验
+    的那份）是两个不同的文件——本机测试"DEEPSEEK_API_KEY 字段是否存在"测的其实是不会被
+    真正用到的文件，容易产生假安全感。改成默认就是 SUPER_BRAIN / "config.json"，不再
+    隐式依赖另一个项目是否存在/是否配置过。
+    """
+    out = _run_snippet(
+        "import paths; "
+        "print(str(paths.DEEPSEEK_CONFIG_PATH) == str(paths.SUPER_BRAIN / 'config.json'))",
+        {"SUPER_BRAIN_DIR": "/opt/super_brain"},
+    )
+    assert out == "True"
+
+
+def test_deepseek_config_path_still_overridable_via_env_var():
+    """显式设置的 DEEPSEEK_CONFIG_PATH 环境变量必须继续生效——不能因为改了默认值就把
+    "可以覆盖成别的文件"这个能力也一并丢掉。
+    """
+    out = _run_snippet(
+        "import paths; print(str(paths.DEEPSEEK_CONFIG_PATH))",
+        {"SUPER_BRAIN_DIR": "/opt/super_brain", "DEEPSEEK_CONFIG_PATH": "/somewhere/else/config.json"},
+    )
+    assert out.replace("\\", "/") == "/somewhere/else/config.json"
