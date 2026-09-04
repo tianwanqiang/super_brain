@@ -227,7 +227,7 @@ def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
         # 顺序反过来的话，微信调用失败时用户会连"到底生成了什么"都看不到，只能看
         # 一段报错文字。
         wechat_slug = re.sub(r"[^\w一-鿿-]", "-", path.stem)[:40].strip("-") or "untitled"
-        wechat_preview_path = publishers.get_toutiao_drafts_dir() / f"wechat_from_minutes_{wechat_slug}.html"
+        wechat_preview_path = publishers.get_wechat_drafts_dir() / f"from_minutes_{wechat_slug}.html"
         wechat_preview_path.parent.mkdir(parents=True, exist_ok=True)
         wechat_preview_path.write_text(html, encoding="utf-8")
         results["wechat_preview_path"] = str(wechat_preview_path)

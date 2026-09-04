@@ -17,9 +17,14 @@ import publishers
 
 @pytest.fixture
 def fake_drafts_dir(tmp_path, monkeypatch):
-    drafts_dir = tmp_path / "drafts"
-    monkeypatch.setattr(publishers, "get_toutiao_drafts_dir", lambda: drafts_dir)
-    return drafts_dir
+    """头条、公众号各自独立的假目录——两者互不依赖，这里也分开 mock，避免测试本身
+    悄悄假设两者共用一个目录（这正是这次要拆开的耦合）。
+    """
+    toutiao_dir = tmp_path / "toutiao-drafts"
+    wechat_dir = tmp_path / "wechat-drafts"
+    monkeypatch.setattr(publishers, "get_toutiao_drafts_dir", lambda: toutiao_dir)
+    monkeypatch.setattr(publishers, "get_wechat_drafts_dir", lambda: wechat_dir)
+    return wechat_dir
 
 
 @pytest.fixture
@@ -74,10 +79,9 @@ def test_wechat_html_is_still_saved_locally_when_publish_fails(fake_drafts_dir, 
     assert "即使发布失败也应该留着的内容" in preview_content
 
 
-def test_wechat_preview_path_is_inside_toutiao_drafts_dir(fake_drafts_dir, fake_minutes_file, monkeypatch):
-    """预览路由（/draft/preview）的安全边界要求所有可预览文件都落在
-    publishers.get_toutiao_drafts_dir() 目录内——公众号预览复用同一个目录/同一套安全边界，
-    不需要单独开一个目录，这里钉死这个前提。
+def test_wechat_preview_path_is_inside_wechat_drafts_dir_not_toutiao(fake_drafts_dir, fake_minutes_file, monkeypatch):
+    """核心诉求：公众号预览文件必须落在它自己独立的目录（get_wechat_drafts_dir()）里，
+    不能出现在头条的目录下——两者不该再共用一个目录，这是这次拆开耦合要钉死的前提。
     """
     monkeypatch.setattr(executors, "generate_writer_draft", lambda content, api_key: "定稿正文")
     monkeypatch.setattr(executors, "adapt_draft_to_toutiao", lambda draft, api_key: "头条正文")
@@ -88,8 +92,9 @@ def test_wechat_preview_path_is_inside_toutiao_drafts_dir(fake_drafts_dir, fake_
 
     from pathlib import Path
     preview_path = Path(results["wechat_preview_path"]).resolve()
-    allowed_root = fake_drafts_dir.resolve()
-    preview_path.relative_to(allowed_root)  # 不抛异常就是通过——路径确实在允许目录内
+    preview_path.relative_to(publishers.get_wechat_drafts_dir().resolve())  # 不抛异常就是通过
+    with pytest.raises(ValueError):
+        preview_path.relative_to(publishers.get_toutiao_drafts_dir().resolve())
 
 
 def test_toutiao_and_wechat_both_generated_from_the_same_shared_draft(fake_drafts_dir, fake_minutes_file, monkeypatch):

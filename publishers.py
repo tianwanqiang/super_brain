@@ -30,6 +30,13 @@ CONFIG_PATH = SUPER_BRAIN / "config.json"
 # 这个功能会在 subprocess 那一步明确报错（找不到 powershell），不会是这种诡异的路径拼接错误。
 TOUTIAO_SCRIPT = OPC_ROOT / "toutiao-agent" / "Generate-ToutiaoDraft.ps1"
 TOUTIAO_DRAFTS_DIR_DEFAULT = OPC_ROOT / "toutiao-agent" / "drafts"
+# 公众号草稿的本地预览文件不能挂靠头条那套默认路径——头条的默认值依赖兄弟项目
+# toutiao-agent 的目录结构（OPC_ROOT/toutiao-agent/drafts），服务器上这个兄弟项目根本
+# 不存在，公众号内容跟它没有任何关系，存进一个语义上完全不相关、服务器上凭空造出来的
+# 目录里会让人误以为两者有依赖关系。默认值改成 SUPER_BRAIN 自己下面的目录——不管本机
+# 还是服务器，SUPER_BRAIN 都保证指向 super_brain 自己的仓库根目录，不依赖任何兄弟项目
+# 是否存在。
+WECHAT_DRAFTS_DIR_DEFAULT = SUPER_BRAIN / "wechat_drafts"
 
 
 class PublishError(Exception):
@@ -59,6 +66,22 @@ def get_toutiao_drafts_dir() -> Path:
         except (json.JSONDecodeError, OSError):
             logger.warning("读取 config.json 里的 TOUTIAO_DRAFTS_DIR 失败，用默认目录兜底")
     return TOUTIAO_DRAFTS_DIR_DEFAULT
+
+
+def get_wechat_drafts_dir() -> Path:
+    """公众号草稿本地预览文件的存放目录——跟 get_toutiao_drafts_dir() 是同样的"可选配置+
+    兜底默认值"模式，但默认值跟头条完全独立（见 WECHAT_DRAFTS_DIR_DEFAULT 上面的说明），
+    不共用同一个目录、也不共用同一个默认值来源。config.json 里对应字段是 WECHAT_DRAFTS_DIR。
+    """
+    if CONFIG_PATH.exists():
+        try:
+            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
+            value = config.get("WECHAT_DRAFTS_DIR")
+            if value:
+                return Path(value)
+        except (json.JSONDecodeError, OSError):
+            logger.warning("读取 config.json 里的 WECHAT_DRAFTS_DIR 失败，用默认目录兜底")
+    return WECHAT_DRAFTS_DIR_DEFAULT
 
 
 # ---------- 微信 ----------

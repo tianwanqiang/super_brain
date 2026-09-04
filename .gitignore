@@ -41,6 +41,11 @@ tasks.yaml
 # Round 3 任务确认后生成的产物草稿，是运行时产物不是代码
 task_drafts/
 
+# 公众号草稿的本地预览文件（get_wechat_drafts_dir() 默认值），运行时产物不是代码——
+# 头条草稿目录默认值在 super_brain 仓库之外（兄弟项目 toutiao-agent 下），不需要在这里
+# 忽略；公众号这个默认值特意选在仓库内部，所以需要单独忽略
+wechat_drafts/
+
 # 机制 2 定期复盘生成的建议（源头是 lessons.md，同样是运行时产物不是代码）
 agents/*/reviews/
 

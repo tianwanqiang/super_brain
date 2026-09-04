@@ -1314,9 +1314,10 @@ DRAFT_PREVIEW_HTML_EXTS = {".html"}
 @app.route("/draft/preview")
 def draft_preview():
     """快捷预览头条/公众号草稿——安全边界很关键：path 参数完全来自用户输入（哪怕是本机
-    单用户工具），必须校验解析后的真实路径确实落在头条草稿目录内，不然就是一个任意文件
-    读取漏洞（公众号草稿的 HTML 也存进了同一个目录，见 executors.py 的
-    execute_ops_assistant_from_minutes，复用同一套安全边界，不需要单独开一个目录/开关）。
+    单用户工具），必须校验解析后的真实路径确实落在"允许预览的目录"内，不然就是一个任意
+    文件读取漏洞。头条、公众号各自有自己独立的草稿目录（publishers.get_toutiao_drafts_dir()
+    / get_wechat_drafts_dir()，两者默认值互不依赖，见 publishers.py 里的说明），这里两个
+    都认，只要落在其中任意一个目录内就放行。
 
     .md/.txt（头条草稿）按纯文本展示，原样转义，不解释里面的任何标记；.html（公众号草稿）
     这份内容本身是 DeepSeek 按受限标签+内联样式生成的（见 adapt_draft_to_wechat 的 prompt
@@ -1329,12 +1330,10 @@ def draft_preview():
         return "缺少 path 参数", 400
 
     target = Path(raw_path).resolve()
-    allowed_root = publishers.get_toutiao_drafts_dir().resolve()
-    try:
-        target.relative_to(allowed_root)
-    except ValueError:
+    allowed_roots = [publishers.get_toutiao_drafts_dir().resolve(), publishers.get_wechat_drafts_dir().resolve()]
+    if not any(target == root or root in target.parents for root in allowed_roots):
         logger.warning(f"UI：草稿预览请求被拒绝——路径不在允许的目录内：{raw_path!r}")
-        return "只能预览头条草稿目录内的文件", 403
+        return "只能预览头条/公众号草稿目录内的文件", 403
 
     suffix = target.suffix.lower()
     if suffix not in DRAFT_PREVIEW_PLAINTEXT_EXTS and suffix not in DRAFT_PREVIEW_HTML_EXTS:
