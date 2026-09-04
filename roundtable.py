@@ -515,7 +515,7 @@ def load_all_conversations() -> list[dict]:
 
 
 def run_roundtable(agent_names: list[str], question: str, conversation_id: str | None = None,
-                    stream_queue=None, use_rag: bool = False) -> dict:
+                    stream_queue=None) -> dict:
     """conversation_id 为 None 时新建一个会话；传入已有会话 id 时，是在这个会话里追问——
     追问会带上这个会话之前的历史脉络（见 _round1_system_prompt 的 prior_turns），不是
     每次提问都从零开始、互相无关的独立记录。
@@ -524,11 +524,12 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
     队列，供 UI 实时渲染；不传就是原来的阻塞模式，行为完全不变（CLI 用法、以前的调用方
     都不受影响）。
 
-    use_rag=True 时，每个专家拿到的不再是 private.md 整篇原文，而是"角色说明+输出要求
-    （整篇）+ 针对这次问题检索出的最相关几条规则"（见 rag.build_retrieved_context）。
-    默认 False——这是刚接进来、还没经过真实效果验证的新路径，不能默默改变现有行为，
-    要不要真的换成默认模式，等真实效果对比过再定。用某个 agent 还没建过 RAG 索引时会
-    直接抛 FileNotFoundError，不会静默退回整篇注入掩盖这个问题。
+    2026-09-03 起改成按专家自动判断，不再是手动传参数的开关：某个专家已经建过 RAG 索引，
+    就走"用户提问 → RAG 检索 → 结合检索结果重组这个专家的知识框架部分 → 专家依据结果
+    回答"这条标准流程（见 rag.build_retrieved_context）；没建过索引的专家，退回整篇
+    private.md 注入（保底行为，不是长期并存的另一个平级选项——RAG 检索本身要持续做质量
+    优化，见 rag_analytics 看板，不是"能跑就行"）。检索失败（比如凭据没配好、DashVector
+    连不上）时同样退回整篇注入，并记日志，不会让一次检索故障直接搞挂整场圆桌讨论。
     """
     registry = load_agent_registry()
 
@@ -551,12 +552,21 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
     else:
         conversation_id = create_conversation(agent_names, question)
 
-    logger.info(f"===== 圆桌讨论启动：{question!r}，专家：{agent_names}，会话：{conversation_id}"
-                f"（RAG 模式：{'开' if use_rag else '关'}） =====")
-    if use_rag:
-        contexts = {name: rag.build_retrieved_context(name, question) for name in agent_names}
-    else:
-        contexts = {name: load_private_context(name, registry) for name in agent_names}
+    logger.info(f"===== 圆桌讨论启动：{question!r}，专家：{agent_names}，会话：{conversation_id} =====")
+
+    indexed_agents = set(rag.list_indexed_agents())
+    contexts: dict[str, str] = {}
+    for name in agent_names:
+        if name not in indexed_agents:
+            logger.info(f"[{name}] 没有 RAG 索引，走整篇 private.md 注入")
+            contexts[name] = load_private_context(name, registry)
+            continue
+        try:
+            contexts[name] = rag.build_retrieved_context(name, question)
+            logger.info(f"[{name}] 走 RAG 检索模式")
+        except Exception:
+            logger.exception(f"[{name}] RAG 检索失败，退回整篇 private.md 注入")
+            contexts[name] = load_private_context(name, registry)
 
     tavily_api_key = load_tavily_api_key()
     web_search_enabled = bool(tavily_api_key)

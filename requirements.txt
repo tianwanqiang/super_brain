@@ -1,7 +1,8 @@
 pyyaml>=6.0
 flask>=3.0
 
-# RAG 检索基础设施——本地跑嵌入模型，DeepSeek 没有 embeddings 接口，这是唯一不花钱的路径。
-# 注意：这会带入 torch，Docker 镜像体积和内存占用会明显增加，服务器配置吃紧时要留意。
-sentence-transformers>=3.0
-numpy>=1.26
+# RAG 检索基础设施——2026-09-03 从本地嵌入模型（sentence-transformers/torch）换成阿里云
+# DashScope（文本向量化）+ DashVector（向量数据库），原因：服务器只有 1.9G 内存，torch
+# 常驻占用几百MB到1G+，叠加真实请求直接把 gunicorn worker 挤到被系统 OOM Kill（服务器
+# 真实日志确认过）。换成云端方案后，这里不再需要任何机器学习依赖，内存压力从根上解决。
+dashvector>=1.0

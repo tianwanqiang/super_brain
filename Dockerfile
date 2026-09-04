@@ -2,16 +2,13 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# 默认用腾讯云自己的 PyPI 镜像——服务器部署在腾讯云上，同网络内直连比走境外源快得多
-# （RAG 依赖 torch/transformers 这些包体积大，走境外源经常慢到超时）。真要在别的地方
-# 构建这个镜像，可以用 --build-arg PIP_INDEX_URL=https://pypi.org/simple 覆盖回官方源。
+# 默认用腾讯云自己的 PyPI 镜像——服务器部署在腾讯云上，同网络内直连比走境外源快得多。
+# 真要在别的地方构建这个镜像，可以用 --build-arg PIP_INDEX_URL=https://pypi.org/simple
+# 覆盖回官方源。
+# 2026-09-03 起 RAG 改用阿里云云端服务（DashScope + DashVector），不再需要在本地/服务器
+# 装 torch 这类机器学习依赖——这里不再有之前"no space left on device"那类问题的土壤。
 ARG PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
 COPY requirements.txt .
-# torch 不指定来源时默认装 GPU（CUDA）版本，会带一堆 nvidia/triton 相关的巨型依赖
-# （几个 GB），服务器没有 GPU 完全用不上——这是之前 "no space left on device" 报错的
-# 真正原因，不是磁盘太小。先单独装官方的 CPU-only 版本（体积小得多），sentence-transformers
-# 检测到 torch 已经装好，就不会再去装一遍 GPU 版本了。
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r requirements.txt gunicorn
 
 COPY . .

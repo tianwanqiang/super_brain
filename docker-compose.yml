@@ -6,9 +6,6 @@ services:
     environment:
       - SUPER_BRAIN_PASSWORD=${SUPER_BRAIN_PASSWORD}
       - SUPER_BRAIN_SECRET_KEY=${SUPER_BRAIN_SECRET_KEY}
-      # RAG 嵌入模型从 Hugging Face 下载——境外直连大概率会碰到跟 GitHub/Docker Hub/PyPI
-      # 同样的连接问题，提前配好国内镜像，不用等一次超时才发现。
-      - HF_ENDPOINT=https://hf-mirror.com
     volumes:
       # 把整个仓库目录挂进容器——代码和数据（config.json、conversations/、tasks.yaml
       # 这些真实数据）都留在服务器的宿主机文件系统上，不打进镜像。CI/CD 重新部署时

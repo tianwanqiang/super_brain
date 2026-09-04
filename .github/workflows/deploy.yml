@@ -21,8 +21,9 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          # 默认 10 分钟——RAG 依赖（torch/sentence-transformers）在配置吃紧的服务器上
-          # docker build 装依赖经常超过这个时间，2026-09-02 那次就是被这个默认值打断的。
+          # 默认 10 分钟——2026-09-02 那次被打断是因为当时还依赖 torch/sentence-transformers，
+          # 这两个重依赖已经在 2026-09-03 换成阿里云 DashScope/DashVector 云端服务后移除，
+          # 现在 docker build 应该明显更快；30m 留着是保守冗余，不是仍然需要这么久。
           command_timeout: 30m
           script: |
             set -e

@@ -71,7 +71,7 @@
   {% if query_count == 0 %}
   <div class="card">
     <h2>检索命中 &amp; 相似度分布</h2>
-    <div class="empty">还没有真实检索记录——只有圆桌讨论用 <code>use_rag=True</code> 真跑过一次，这里才会有数据</div>
+    <div class="empty">还没有真实检索记录——这个专家建过索引之后，圆桌讨论会自动走 RAG 检索，真跑过一次这里才会有数据</div>
   </div>
   {% else %}
   <div class="card">

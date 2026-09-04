@@ -32,9 +32,14 @@
      "WECHAT_APP_ID": "...",
      "WECHAT_APP_KEY": "...",
      "WECHAT_DEFAULT_COVER_URL": "...",
-     "MEETING_MINUTES_DIR": "/opt/super_brain/meeting_minutes"
+     "MEETING_MINUTES_DIR": "/opt/super_brain/meeting_minutes",
+     "DASHSCOPE_API_KEY": "阿里云百炼的 API Key（sk- 开头，文本向量化用）",
+     "DASHSCOPE_WORKSPACE_ID": "阿里云百炼的 WorkspaceId",
+     "DASHVECTOR_API_KEY": "DashVector 集群的 API Key（跟 DashScope 是两个独立凭据，别混）",
+     "DASHVECTOR_ENDPOINT": "DashVector 集群 endpoint，形如 vrs-xxx.dashvector.cn-xxx.aliyuncs.com"
    }
    ```
+   后四个字段是 RAG 检索用的，不配的话 RAG 相关功能不可用，其余功能不受影响。
 7. 建一个 `.env` 文件（docker-compose 会自动读取），设登录密码和固定的 session 密钥：
    ```bash
    cat > /opt/super_brain/.env <<'EOF'
@@ -69,26 +74,25 @@
 "Run workflow"），观察 Actions 日志——应该会自动 SSH 上服务器、`git pull`、重新构建
 镜像并重启容器。
 
-## RAG 功能上线（新增，需要额外一步）
+## RAG 功能上线（云端向量化，不占服务器内存）
 
-RAG 检索用的 `sentence-transformers`（本地嵌入模型）是新加的依赖，比之前的 Docker 镜像
-重不少（会带入 torch），构建时间和内存占用都会明显增加——你这台是"最便宜档"配置，具体
-扛不扛得住需要实测，如果 `docker compose up -d --build` 卡住/内存不足/被系统杀掉，把
-报错发给我。
+RAG 检索的向量化/存储/检索全部走阿里云两个云端服务（DashScope 文本向量化 + DashVector
+向量数据库），服务器本地不装任何机器学习依赖（`sentence-transformers`/`torch` 已经从
+`requirements.txt` 和 `Dockerfile` 里移除）——早期用本地嵌入模型时，这台"最便宜档"
+配置（1.9G 内存）真实发生过 gunicorn worker 被系统 OOM Kill、圆桌讨论内容当场丢失的
+事故，换成云端方案后这类内存压力从根上不存在了。
+
+前提：`config.json` 里配好上面第 6 步那四个 `DASHSCOPE_*`/`DASHVECTOR_*` 字段。
 
 镜像重新构建好之后，RAG 索引**不会**跟着 `git pull` 自动出现——索引是从 `private.md`
 派生出来的构建产物，特意没有进 git（源文件在，索引可以随时重建）。需要手动做一次：
 
 1. 打开 `http://服务器IP:5151/admin`，找到"RAG 检索索引"这一块，点"重建全部专家的 RAG
    索引"。
-2. 第一次点会触发下载嵌入模型（`BAAI/bge-small-zh-v1.5`，约 95MB，从 Hugging Face 下载）。
-   如果长时间卡住/超时，大概率又是跟 GitHub/Docker Hub 那次一样的境外直连问题，解法是
-   给 Hugging Face 也配一个国内镜像源——在 `docker-compose.yml` 的 `environment` 里加一行：
-   ```yaml
-   - HF_ENDPOINT=https://hf-mirror.com
-   ```
-   加完 `docker compose up -d`（不用重新 build）重启容器生效，再回 admin 页面重新点一次。
-3. 每个 agent 显示"N 条规则"就是建好了；显示"失败：xxx"的话把报错发给我。
+2. 每次点击都是真实的 DashScope 付费调用（很便宜，text-embedding-v3 约 ¥0.0005/千
+   token，且有 50 万 token 免费额度），不需要下载任何模型文件，不受境外直连问题影响。
+3. 每个 agent 显示"N 条规则"就是建好了；显示"失败：xxx"多半是 `config.json` 里那
+   四个字段没配全，或者 DashVector 集群/API Key 有问题，把报错发给我。
 
 ## 之后的日常使用
 
