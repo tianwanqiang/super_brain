@@ -6,7 +6,23 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 安装依赖（含 requirements.txt + pytest，不影响生产镜像——Dockerfile 只装 requirements.txt）
+        run: pip install -r requirements-dev.txt
+
+      - name: 跑单元测试（tests/，全部零成本，不碰真实 API/凭据）
+        run: python -m pytest -q
+
   deploy:
+    needs: test  # 测试没过，这个 job 不会跑，服务器上的代码不会被这次改动覆盖
     runs-on: ubuntu-latest
     steps:
       - name: 调试 - 打印这次运行的出口 IP（用于跟服务器安全告警的 IP 核对）
