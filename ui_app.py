@@ -221,6 +221,21 @@ def load_config_safe() -> dict:
         return {}
 
 
+def get_meeting_minutes_dir() -> Path | None:
+    """会议纪要预览（/draft/preview）需要知道当前配置的存放目录，作为允许预览的安全边界——
+    跟 roundtable.write_meeting_minutes() 读的是同一个 config.json 字段。没配置就返回
+    None，预览路由据此判断"当前完全不允许预览任何会议纪要"，不是报错，是正常的未配置状态。
+
+    只认**当前**这个配置值，不兼容历史上曾经配置过、后来又改掉的旧目录——这是刻意的：
+    如果什么旧目录都放行，安全边界会越放越松，且没有办法判断"这个旧目录是不是还归
+    super_brain 管"。历史上因为 MEETING_MINUTES_DIR 配错（带引号/相对路径那次事故）
+    产生的、記在旧会话记录里的畸形路径，不会因为这个函数而变得可预览，需要的话手动
+    把物理文件挪到现在配置的目录下。
+    """
+    value = load_config_safe().get("MEETING_MINUTES_DIR")
+    return Path(value) if value else None
+
+
 def _load_config_for_update() -> tuple[dict | None, str | None]:
     """给"改一个字段、写回整个文件"这类保存路径用——跟 load_config_safe() 不一样，
     不能把"文件存在但读取失败"悄悄当成空配置返回，否则调用方会把这份假的空配置整个写回去，
@@ -1313,17 +1328,22 @@ DRAFT_PREVIEW_HTML_EXTS = {".html"}
 
 @app.route("/draft/preview")
 def draft_preview():
-    """快捷预览头条/公众号草稿——安全边界很关键：path 参数完全来自用户输入（哪怕是本机
-    单用户工具），必须校验解析后的真实路径确实落在"允许预览的目录"内，不然就是一个任意
-    文件读取漏洞。头条、公众号各自有自己独立的草稿目录（publishers.get_toutiao_drafts_dir()
-    / get_wechat_drafts_dir()，两者默认值互不依赖，见 publishers.py 里的说明），这里两个
-    都认，只要落在其中任意一个目录内就放行。
+    """快捷预览头条/公众号草稿、正式会议纪要——安全边界很关键：path 参数完全来自用户输入
+    （哪怕是本机单用户工具），必须校验解析后的真实路径确实落在"允许预览的目录"内，不然
+    就是一个任意文件读取漏洞。三类内容各有自己的目录（publishers.get_toutiao_drafts_dir()
+    / get_wechat_drafts_dir() / ui_app.get_meeting_minutes_dir()，互不依赖），这里全都认，
+    落在其中任意一个目录内就放行；会议纪要目录没配置（get_meeting_minutes_dir() 返回
+    None）时不参与判断，不代表放行更宽松。
 
-    .md/.txt（头条草稿）按纯文本展示，原样转义，不解释里面的任何标记；.html（公众号草稿）
-    这份内容本身是 DeepSeek 按受限标签+内联样式生成的（见 adapt_draft_to_wechat 的 prompt
-    约束：只允许 h3/p/blockquote/strong/code 几个标签），不是任意用户上传的 HTML，直接
-    渲染成真实排版效果比展示一堆转义后的标签文字更有用——单用户内部工具，这个信任边界
-    是合理的。
+    只认**当前**配置的会议纪要目录，不兼容历史上配错、后来改掉的旧路径（畸形路径见
+    get_meeting_minutes_dir() 的说明）——旧会话记录里可能存着当时错误配置下生成的
+    minutes_path，这类文件不会因为这里放宽而变得可预览，这是刻意的，不是遗漏。
+
+    .md/.txt（头条草稿、会议纪要）按纯文本展示，原样转义，不解释里面的任何标记；
+    .html（公众号草稿）这份内容本身是 DeepSeek 按受限标签+内联样式生成的（见
+    adapt_draft_to_wechat 的 prompt 约束：只允许 h3/p/blockquote/strong/code 几个标签），
+    不是任意用户上传的 HTML，直接渲染成真实排版效果比展示一堆转义后的标签文字更有用——
+    单用户内部工具，这个信任边界是合理的。
     """
     raw_path = request.args.get("path", "")
     if not raw_path:
@@ -1331,9 +1351,12 @@ def draft_preview():
 
     target = Path(raw_path).resolve()
     allowed_roots = [publishers.get_toutiao_drafts_dir().resolve(), publishers.get_wechat_drafts_dir().resolve()]
+    meeting_minutes_dir = get_meeting_minutes_dir()
+    if meeting_minutes_dir is not None:
+        allowed_roots.append(meeting_minutes_dir.resolve())
     if not any(target == root or root in target.parents for root in allowed_roots):
         logger.warning(f"UI：草稿预览请求被拒绝——路径不在允许的目录内：{raw_path!r}")
-        return "只能预览头条/公众号草稿目录内的文件", 403
+        return "只能预览头条/公众号草稿、当前配置的会议纪要目录内的文件", 403
 
     suffix = target.suffix.lower()
     if suffix not in DRAFT_PREVIEW_PLAINTEXT_EXTS and suffix not in DRAFT_PREVIEW_HTML_EXTS:

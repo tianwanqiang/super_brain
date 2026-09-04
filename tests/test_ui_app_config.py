@@ -85,6 +85,21 @@ def test_write_config_with_backup_first_write_has_no_backup_yet(fake_config_path
     assert json.loads(fake_config_path.read_text(encoding="utf-8"))["MEETING_MINUTES_DIR"] == "/opt/x"
 
 
+def test_get_meeting_minutes_dir_returns_none_when_not_configured(fake_config_path):
+    assert ui_app.get_meeting_minutes_dir() is None
+
+
+def test_get_meeting_minutes_dir_returns_current_configured_value(fake_config_path):
+    fake_config_path.write_text(json.dumps({"MEETING_MINUTES_DIR": "/app/meeting"}), encoding="utf-8")
+    from pathlib import Path
+    assert ui_app.get_meeting_minutes_dir() == Path("/app/meeting")
+
+
+def test_get_meeting_minutes_dir_returns_none_for_empty_string(fake_config_path):
+    fake_config_path.write_text(json.dumps({"MEETING_MINUTES_DIR": ""}), encoding="utf-8")
+    assert ui_app.get_meeting_minutes_dir() is None
+
+
 @pytest.mark.parametrize(
     "raw, expected",
     [

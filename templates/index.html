@@ -146,9 +146,29 @@
   .bubble-synthesis a { color: #1e5c2f; font-weight: 600; }
   .bubble-synthesis.skip { background: #f1eee7; border-color: #8a7f68; color: #5c5340; }
 
+  /* 会议纪要功能入口——把"纪要本身+预览"和"生成/查看文案草稿"统一收进一张卡片，
+     不是各自散落的独立气泡，方便一眼看出这是同一个功能的两个步骤 */
+  .minutes-card {
+    align-self: stretch; border: 1px solid #1e7a3c; border-radius: 10px; overflow: hidden;
+    background: #eaf5ec;
+  }
+  .minutes-card.skip { border-color: #8a7f68; background: #f1eee7; }
+  .minutes-card-header {
+    padding: 10px 16px; color: #1e5c2f; font-size: 13.5px; line-height: 1.6;
+    display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px;
+  }
+  .minutes-card.skip .minutes-card-header { color: #5c5340; }
+  .minutes-card-header .minutes-label {
+    font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+    opacity: 0.7; margin-right: 6px;
+  }
+  .minutes-card-header a { color: #1e5c2f; font-weight: 600; white-space: nowrap; }
+  .minutes-card-body {
+    border-top: 1px solid rgba(30, 122, 60, 0.25); padding: 12px 16px;
+  }
+
   .bubble-draft {
-    align-self: stretch; background: #eef2fb; border: 1px solid #34508a; color: #253a63;
-    padding: 12px 16px; border-radius: 10px; font-size: 13px; line-height: 1.7;
+    font-size: 13px; line-height: 1.7; color: #253a63;
   }
   .bubble-draft .err { color: #8a2e20; }
   .bubble-draft a { color: #34508a; font-weight: 600; text-decoration: none; margin-left: 4px; }
@@ -471,48 +491,56 @@
     {% endif %}
 
     {% if turn.minutes_path %}
-    <div class="bubble-synthesis">正式会议纪要已生成：<code>{{ turn.minutes_path }}</code></div>
-
-    {% set draft = draft_log.get(turn.minutes_path) %}
-    {% if current_draft and current_draft.minutes_path == turn.minutes_path %}
-    <div class="bubble-pending" id="pendingDraft" data-minutes-path="{{ turn.minutes_path }}">
-      <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-      {{ agent_label('ops-assistant') }}正在把这份纪要写成头条 + 公众号草稿，通常需要 15-30 秒
+    <div class="minutes-card">
+      <div class="minutes-card-header">
+        <span><span class="minutes-label">会议纪要</span><code>{{ turn.minutes_path }}</code></span>
+        <a href="{{ url_for('draft_preview', path=turn.minutes_path) }}" target="_blank">预览纪要 →</a>
+      </div>
+      <div class="minutes-card-body">
+        {% set draft = draft_log.get(turn.minutes_path) %}
+        {% if current_draft and current_draft.minutes_path == turn.minutes_path %}
+        <div class="bubble-pending" id="pendingDraft" data-minutes-path="{{ turn.minutes_path }}">
+          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          {{ agent_label('ops-assistant') }}正在把这份纪要写成头条 + 公众号草稿，通常需要 15-30 秒
+        </div>
+        {% elif draft %}
+        <div class="bubble-draft">
+          <strong>{{ agent_label('ops-assistant') }}已生成草稿</strong>（{{ draft.timestamp }}）<br>
+          {% if draft.result.toutiao %}
+          头条草稿已保存至：<code class="draft-path">{{ draft.result.toutiao }}</code>
+          <a href="{{ url_for('draft_preview', path=draft.result.toutiao) }}" target="_blank">预览 →</a>
+          <button type="button" class="copy-path-btn" data-path="{{ draft.result.toutiao }}">复制路径</button><br>
+          {% endif %}
+          {% if draft.result.toutiao_error %}<span class="err">头条草稿生成失败：{{ draft.result.toutiao_error }}</span><br>{% endif %}
+          {% if draft.result.wechat %}
+          公众号草稿已建好（draft_media_id: {{ draft.result.wechat.draft_media_id }}），去公众号后台"草稿箱"查看
+          {% if draft.result.wechat_preview_path %}
+          <a href="{{ url_for('draft_preview', path=draft.result.wechat_preview_path) }}" target="_blank">预览 →</a>
+          {% endif %}
+          <br>
+          {% endif %}
+          {% if draft.result.wechat_error %}
+          <span class="err">公众号草稿生成失败：{{ draft.result.wechat_error }}</span>
+          {% if draft.result.wechat_preview_path %}
+          （内容已在本地生成，未能真的建到微信草稿箱——
+          <a href="{{ url_for('draft_preview', path=draft.result.wechat_preview_path) }}" target="_blank">预览 →</a>）
+          {% endif %}
+          <br>
+          {% endif %}
+        </div>
+        {% else %}
+        <form class="draft-form" method="post" action="{{ url_for('minutes_draft') }}">
+          <input type="hidden" name="minutes_path" value="{{ turn.minutes_path }}">
+          <button type="submit">调用助手 agent 直接撰写草稿（头条 + 公众号）</button>
+        </form>
+        {% endif %}
+      </div>
     </div>
-    {% elif draft %}
-    <div class="bubble-draft">
-      <strong>{{ agent_label('ops-assistant') }}已生成草稿</strong>（{{ draft.timestamp }}）<br>
-      {% if draft.result.toutiao %}
-      头条草稿已保存至：<code class="draft-path">{{ draft.result.toutiao }}</code>
-      <a href="{{ url_for('draft_preview', path=draft.result.toutiao) }}" target="_blank">预览 →</a>
-      <button type="button" class="copy-path-btn" data-path="{{ draft.result.toutiao }}">复制路径</button><br>
-      {% endif %}
-      {% if draft.result.toutiao_error %}<span class="err">头条草稿生成失败：{{ draft.result.toutiao_error }}</span><br>{% endif %}
-      {% if draft.result.wechat %}
-      公众号草稿已建好（draft_media_id: {{ draft.result.wechat.draft_media_id }}），去公众号后台"草稿箱"查看
-      {% if draft.result.wechat_preview_path %}
-      <a href="{{ url_for('draft_preview', path=draft.result.wechat_preview_path) }}" target="_blank">预览 →</a>
-      {% endif %}
-      <br>
-      {% endif %}
-      {% if draft.result.wechat_error %}
-      <span class="err">公众号草稿生成失败：{{ draft.result.wechat_error }}</span>
-      {% if draft.result.wechat_preview_path %}
-      （内容已在本地生成，未能真的建到微信草稿箱——
-      <a href="{{ url_for('draft_preview', path=draft.result.wechat_preview_path) }}" target="_blank">预览 →</a>）
-      {% endif %}
-      <br>
-      {% endif %}
-    </div>
-    {% else %}
-    <form class="draft-form" method="post" action="{{ url_for('minutes_draft') }}">
-      <input type="hidden" name="minutes_path" value="{{ turn.minutes_path }}">
-      <button type="submit">调用助手 agent 直接撰写草稿</button>
-    </form>
-    {% endif %}
 
     {% else %}
-    <div class="bubble-synthesis skip">未落盘正式会议纪要（当时没配置存放目录），原始记录仍保留在上面。</div>
+    <div class="minutes-card skip">
+      <div class="minutes-card-header"><span class="minutes-label">会议纪要</span>未落盘（当时没配置存放目录），原始记录仍保留在上面。</div>
+    </div>
     {% endif %}
   </div>
   {% endfor %}

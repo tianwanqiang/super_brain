@@ -4,9 +4,10 @@
 见 test_executors_wechat_preview.py），需要这个路由能正确识别 .html 并按真实 HTML 渲染
 （不是把标签当纯文本转义出来）。
 
-头条、公众号各自有自己独立的草稿目录（publishers.get_toutiao_drafts_dir() /
-get_wechat_drafts_dir()，两者默认值互不依赖，见 test_publishers_drafts_dirs.py），这个
-路由要同时认这两个目录——落在其中任意一个都放行，都不在的一律拒绝。
+头条、公众号、会议纪要各自有自己独立的目录（publishers.get_toutiao_drafts_dir() /
+get_wechat_drafts_dir() / ui_app.get_meeting_minutes_dir()，互不依赖，见
+test_publishers_drafts_dirs.py），这个路由要同时认这三个目录——落在其中任意一个都放行，
+都不在的一律拒绝；会议纪要目录没配置时不参与判断（不是"放行更宽松"，是少一个允许的根）。
 """
 import pytest
 
@@ -22,7 +23,16 @@ def fake_drafts_dirs(tmp_path, monkeypatch):
     wechat_dir.mkdir()
     monkeypatch.setattr(publishers, "get_toutiao_drafts_dir", lambda: toutiao_dir)
     monkeypatch.setattr(publishers, "get_wechat_drafts_dir", lambda: wechat_dir)
+    monkeypatch.setattr(ui_app, "get_meeting_minutes_dir", lambda: None)
     return toutiao_dir, wechat_dir
+
+
+@pytest.fixture
+def fake_meeting_minutes_dir(tmp_path, monkeypatch):
+    minutes_dir = tmp_path / "meeting-minutes"
+    minutes_dir.mkdir()
+    monkeypatch.setattr(ui_app, "get_meeting_minutes_dir", lambda: minutes_dir)
+    return minutes_dir
 
 
 def _get(path):
@@ -94,3 +104,39 @@ def test_missing_file_returns_404(fake_drafts_dirs):
     missing = wechat_dir / "does-not-exist.html"
     response, status = _get(str(missing))
     assert status == 404
+
+
+def test_meeting_minutes_file_is_previewable_when_dir_is_configured(fake_drafts_dirs, fake_meeting_minutes_dir):
+    minutes_file = fake_meeting_minutes_dir / "2026-09-04_1000_test.md"
+    minutes_file.write_text("# 会议纪要\n\n正文内容", encoding="utf-8")
+
+    response = _get(str(minutes_file))
+    body = response.get_data(as_text=True) if hasattr(response, "get_data") else response
+    assert "正文内容" in body
+
+
+def test_meeting_minutes_preview_rejected_when_dir_not_configured(fake_drafts_dirs, tmp_path):
+    """get_meeting_minutes_dir() 返回 None（没配置）时，任何路径都不应该因为"凑巧长得像
+    会议纪要文件"就被放行——必须显式配置了目录，这个目录才参与安全边界判断。
+    """
+    somewhere = tmp_path / "somewhere" / "2026-09-04_1000_test.md"
+    somewhere.parent.mkdir(parents=True)
+    somewhere.write_text("正文", encoding="utf-8")
+
+    response, status = _get(str(somewhere))
+    assert status == 403
+
+
+def test_stale_legacy_path_outside_current_meeting_minutes_dir_is_rejected(fake_drafts_dirs, fake_meeting_minutes_dir, tmp_path):
+    """2026-09-04 真实场景：MEETING_MINUTES_DIR 曾经配错过（带引号/相对路径），旧会话
+    记录里存着当时错误配置下生成的畸形路径。即使现在已经配好了正确的会议纪要目录，
+    这类不在当前目录下的旧路径也应该继续被拒绝——不能因为"看起来像会议纪要"就放宽，
+    这是刻意的安全边界，不是需要修的 bug。
+    """
+    stale_dir = tmp_path / "opt" / "super_brain" / "meeting"
+    stale_dir.mkdir(parents=True)
+    stale_file = stale_dir / "2026-09-04_0844_test.md"
+    stale_file.write_text("旧配置下生成的内容", encoding="utf-8")
+
+    response, status = _get(str(stale_file))
+    assert status == 403
