@@ -544,24 +544,46 @@ def roundtable_run_stream():
     return jsonify({"conversation_id": conversation_id})
 
 
+# 2026-09-04 真实事故：圆桌讨论中途，gunicorn 的 --timeout（Dockerfile 里配的 120 秒）
+# 比这里原来单次 q.get(timeout=180) 的等待时间还短——LLM 思考阶段/web_search 往返这类
+# 合理的静默间隔一旦超过 120 秒没有任何字节发给 gunicorn，gunicorn 自己的看门狗会直接
+# 把整个 worker 杀掉（SIGABRT -> SystemExit），跟这里"等够 180 秒再优雅报超时"的设计完全
+# 来不及触发——这个服务只有 1 个 worker（Dockerfile 的 -w 1），worker 被杀等于整个服务
+# 中断重启，正在进行的圆桌讨论内容当场从 UI 上消失。
+# 修法：短轮询 + 保活字节——每隔 KEEPALIVE_INTERVAL_SECONDS 秒轮询一次队列，没有真消息
+# 就发一行 SSE 注释（EventSource 客户端会忽略 ":" 开头的行，但字节本身已经发给了 gunicorn，
+# 足以让它认为这个 worker 还活着），累计静默时间到 OVERALL_IDLE_LIMIT_SECONDS 才真的放弃——
+# 保留原来"防止某个环节卡死导致连接永远挂着"的设计意图，只是不再靠一次性长阻塞实现。
+KEEPALIVE_INTERVAL_SECONDS = 20
+OVERALL_IDLE_LIMIT_SECONDS = 180
+
+
 @app.route("/roundtable/stream/<conversation_id>")
 def roundtable_stream(conversation_id):
     """SSE 端点——前端建立连接后持续收到 Round 1/2/3 的实时 chunk，直到收到
-    run_done/error 类型的消息为止。单条消息最多等 3 分钟，防止某个环节卡死导致
-    连接永远挂着不释放。
+    run_done/error 类型的消息为止。累计静默 OVERALL_IDLE_LIMIT_SECONDS 秒收不到任何
+    真消息就放弃，防止某个环节卡死导致连接永远挂着不释放；静默期间按
+    KEEPALIVE_INTERVAL_SECONDS 秒的间隔发保活字节，避免被 gunicorn 的 --timeout 误杀
+    （见上面的事故记录）。
     """
     def generate():
         q = _get_stream_queue(conversation_id)
         if q is None:
             yield f"data: {json.dumps({'type': 'error', 'message': '没有找到这场讨论的流，可能已经结束或从没开始过'}, ensure_ascii=False)}\n\n"
             return
+        idle_elapsed = 0
         try:
             while True:
                 try:
-                    msg = q.get(timeout=180)
+                    msg = q.get(timeout=KEEPALIVE_INTERVAL_SECONDS)
                 except queue.Empty:
-                    yield f"data: {json.dumps({'type': 'error', 'message': '等待超时'}, ensure_ascii=False)}\n\n"
-                    break
+                    idle_elapsed += KEEPALIVE_INTERVAL_SECONDS
+                    if idle_elapsed >= OVERALL_IDLE_LIMIT_SECONDS:
+                        yield f"data: {json.dumps({'type': 'error', 'message': '等待超时'}, ensure_ascii=False)}\n\n"
+                        break
+                    yield ": keepalive\n\n"
+                    continue
+                idle_elapsed = 0
                 yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
                 if msg.get("type") in ("run_done", "error"):
                     break
