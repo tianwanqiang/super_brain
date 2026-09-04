@@ -35,7 +35,7 @@ def fake_minutes_file(tmp_path):
 
 
 def test_wechat_html_is_saved_locally_before_publish_succeeds(fake_drafts_dir, fake_minutes_file, monkeypatch):
-    monkeypatch.setattr(executors, "generate_writer_draft", lambda content, api_key: "定稿正文")
+    monkeypatch.setattr(executors, "generate_writer_draft", lambda content, api_key, user_instruction=None: "定稿正文")
     monkeypatch.setattr(executors, "adapt_draft_to_toutiao", lambda draft, api_key: "头条正文")
     monkeypatch.setattr(
         executors, "adapt_draft_to_wechat",
@@ -59,7 +59,7 @@ def test_wechat_html_is_still_saved_locally_when_publish_fails(fake_drafts_dir, 
     """核心诉求：即使真实的微信发布调用失败（网络/凭据/素材上传任何一环），本地这份预览
     内容也不应该跟着丢——用户至少能看到"生成了什么"，不是只剩一段报错文字。
     """
-    monkeypatch.setattr(executors, "generate_writer_draft", lambda content, api_key: "定稿正文")
+    monkeypatch.setattr(executors, "generate_writer_draft", lambda content, api_key, user_instruction=None: "定稿正文")
     monkeypatch.setattr(executors, "adapt_draft_to_toutiao", lambda draft, api_key: "头条正文")
     monkeypatch.setattr(
         executors, "adapt_draft_to_wechat",
@@ -83,7 +83,7 @@ def test_wechat_preview_path_is_inside_wechat_drafts_dir_not_toutiao(fake_drafts
     """核心诉求：公众号预览文件必须落在它自己独立的目录（get_wechat_drafts_dir()）里，
     不能出现在头条的目录下——两者不该再共用一个目录，这是这次拆开耦合要钉死的前提。
     """
-    monkeypatch.setattr(executors, "generate_writer_draft", lambda content, api_key: "定稿正文")
+    monkeypatch.setattr(executors, "generate_writer_draft", lambda content, api_key, user_instruction=None: "定稿正文")
     monkeypatch.setattr(executors, "adapt_draft_to_toutiao", lambda draft, api_key: "头条正文")
     monkeypatch.setattr(executors, "adapt_draft_to_wechat", lambda draft, api_key: ("标题", "<p>正文</p>"))
     monkeypatch.setattr(publishers, "publish_wechat_draft", lambda title, html: {"draft_media_id": "x", "thumb_media_id": "y"})
@@ -103,7 +103,7 @@ def test_toutiao_and_wechat_both_generated_from_the_same_shared_draft(fake_draft
     """
     call_count = {"generate_writer_draft": 0}
 
-    def _fake_generate_writer_draft(content, api_key):
+    def _fake_generate_writer_draft(content, api_key, user_instruction=None):
         call_count["generate_writer_draft"] += 1
         return "共享定稿正文"
 

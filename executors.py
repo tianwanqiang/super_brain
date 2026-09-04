@@ -30,11 +30,26 @@ def read_opc_content(date: str) -> str | None:
     return opc_path.read_text(encoding="utf-8-sig")
 
 
-def generate_content_brief(content: str, api_key: str) -> str:
+def _apply_user_instruction(content: str, user_instruction: str | None) -> str:
+    """把 CEO 额外给的补充要求拼进"用户素材"这一侧，不动任何 agent 自己的 system prompt——
+    agent 的私有知识框架（private.md）始终是 system prompt，代表这个角色本身的判断标准，
+    不应该被一次性的补充要求覆盖或稀释；补充要求只是这一次素材的一部分，跟 content-strategist
+    的知识框架、writer 的知识框架不是一回事。user_instruction 为空/None 时原样返回 content，
+    不产生任何额外文本，行为跟没有这个参数完全一致。
+    """
+    if not user_instruction or not user_instruction.strip():
+        return content
+    return f"{content}\n\n【CEO 补充要求，写作时必须落实】\n{user_instruction.strip()}"
+
+
+def generate_content_brief(content: str, api_key: str, user_instruction: str | None = None) -> str:
     """content-strategist 的上游规划步骤——正式生成文案之前，先产出一份策划简报
     （钩子/节奏/取舍/风险提示），供下面 writer 框架的实际写作参照。这一步让每次生成
     头条/公众号文案的 DeepSeek 调用从 1 次变成 2 次，是已经确认接受的成本取舍
     （见 agents.yaml 里 content-strategist 的注册说明）。
+
+    user_instruction：CEO 手动触发时可以额外给的补充要求（比如"这次重点讲价格策略"），
+    拼进用户素材里，不改动 content-strategist 自己的 system prompt。
     """
     registry = load_agent_registry()
     strategist_context = load_private_context("content-strategist", registry)
@@ -44,20 +59,26 @@ def generate_content_brief(content: str, api_key: str) -> str:
         "不要输出成品文案，也不要输出简报格式之外的任何解释文字。"
     )
     logger.info("调用 content-strategist 生成策划简报")
-    brief = call_deepseek(system_prompt, content, api_key, max_tokens=1500)
+    brief = call_deepseek(
+        system_prompt, _apply_user_instruction(content, user_instruction), api_key, max_tokens=1500,
+    )
     log_execution("content-strategist", "生成策划简报", f"素材长度={len(content)}字")
     return brief
 
 
-def generate_writer_draft(content: str, api_key: str) -> str:
+def generate_writer_draft(content: str, api_key: str, user_instruction: str | None = None) -> str:
     """约束链条的前两环——content-strategist 定策略、writer 按框架执行，产出一份**平台
     无关**的成品草稿。这是 toutiao/公众号唯一的内容判断入口：下游平台格式适配函数
     （adapt_draft_to_*）只允许对这份草稿做格式转换，不能重新判断"这篇内容该强调什么、
     该砍什么"——保证同一份素材生成的头条版和公众号版，核心判断是一致的，不会因为各自
     独立调用一次 DeepSeek 而产生分歧。也是 Round 3 任务派给 writer 时的生成函数（一句
     任务描述同样先过 content-strategist 再过 writer，不再跳过策划这一步）。
+
+    user_instruction 会同时传给 content-strategist（生成简报时）和这里的 writer 调用，
+    保证策划和执笔两步看到的是同一份补充要求，不会出现"简报里没体现、writer 又不知道"
+    这种脱节。
     """
-    brief = generate_content_brief(content, api_key)
+    brief = generate_content_brief(content, api_key, user_instruction=user_instruction)
 
     registry = load_agent_registry()
     writer_context = load_private_context("writer", registry)
@@ -71,7 +92,9 @@ def generate_writer_draft(content: str, api_key: str) -> str:
         "要求**（不要考虑头条号/公众号各自的排版规则，那是下一步的事），只专注内容本身："
         "结构、取舍、表达。第一行输出一个简短标题（不要任何前缀符号），空一行，然后是正文。"
     )
-    return call_deepseek(system_prompt, content, api_key, max_tokens=8000)
+    return call_deepseek(
+        system_prompt, _apply_user_instruction(content, user_instruction), api_key, max_tokens=8000,
+    )
 
 
 def adapt_draft_to_toutiao(draft: str, api_key: str) -> str:
@@ -181,10 +204,14 @@ def generate_toutiao_article(content: str, api_key: str) -> str:
     return adapt_draft_to_toutiao(draft, api_key)
 
 
-def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
+def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str, user_instruction: str | None = None) -> dict:
     """圆桌讨论产出会议纪要之后，直接调 ops-assistant 把这份纪要写成头条 + 公众号草稿——
     跟 execute_ops_assistant_full 是同一个角色，只是输入源从"当天 opc"换成"某一份具体的
     会议纪要文件"，这条路径由 UI 直接触发，不经过 inbox。
+
+    user_instruction：CEO 手动触发时可以额外给的补充要求（可选），原样往下传给
+    generate_writer_draft()——只影响这一次生成的用户素材，不改动任何 agent 自己的
+    system prompt（content-strategist/writer 的 private.md 框架不受影响）。
     """
     path = Path(minutes_path)
     if not path.exists():
@@ -192,12 +219,14 @@ def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
     content = path.read_text(encoding="utf-8-sig")
 
     results: dict = {}
+    if user_instruction:
+        results["user_instruction"] = user_instruction
 
     # 头条 + 公众号同时要，只跑一次 content-strategist + writer，两个平台共享同一份
     # draft，只各自做格式适配——避免两个平台各自独立判断"这篇内容该强调什么"，导致
     # 两个版本的核心信息取舍不一致。
     try:
-        draft = generate_writer_draft(content, api_key)
+        draft = generate_writer_draft(content, api_key, user_instruction=user_instruction)
     except Exception as exc:
         logger.exception("[ops-assistant] 从会议纪要生成共享草稿失败，头条/公众号都无法继续")
         results["draft_error"] = str(exc)

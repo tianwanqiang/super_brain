@@ -621,6 +621,7 @@ def minutes_draft():
     跟圆桌讨论一样：后台线程执行、锁防重复点击、状态轮询，避免重复付费调用。
     """
     minutes_path = request.form.get("minutes_path", "").strip()
+    user_instruction = request.form.get("user_instruction", "").strip() or None
     if not minutes_path:
         session["draft_error"] = "没有会议纪要路径，没法生成草稿。"
         return redirect(url_for("index"))
@@ -634,12 +635,15 @@ def minutes_draft():
         "minutes_path": minutes_path,
         "started_at": datetime.now().strftime("%H:%M:%S"),
     })
-    logger.info(f"UI：触发助手 agent 生成草稿（后台线程）-> minutes_path={minutes_path!r}")
+    logger.info(
+        f"UI：触发助手 agent 生成草稿（后台线程）-> minutes_path={minutes_path!r}, "
+        f"user_instruction={user_instruction!r}"
+    )
 
     def _worker():
         try:
             api_key = llm_client.load_deepseek_api_key()
-            result = executors.execute_ops_assistant_from_minutes(minutes_path, api_key)
+            result = executors.execute_ops_assistant_from_minutes(minutes_path, api_key, user_instruction=user_instruction)
             persist_draft_log(minutes_path, result)
         except (FileNotFoundError, llm_client.DeepSeekConfigError) as exc:
             logger.warning(f"UI：草稿生成失败：{exc}")
