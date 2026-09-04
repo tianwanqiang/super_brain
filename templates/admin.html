@@ -24,6 +24,7 @@
   button.secondary { background: #6b6357; }
   pre { background: #171b24; color: #cfd6e0; padding: 14px; border-radius: 6px; font-size: 12px; overflow-x: auto; max-height: 420px; white-space: pre-wrap; }
   .banner { background: #dcefe0; border: 1px solid #1e7a3c; color: #1e5c2f; padding: 10px 14px; border-radius: 6px; margin: 14px 0; font-size: 13.5px; }
+  .banner-error { background: #fbe3e0; border-color: #b3402f; color: #8a2e20; }
   .stat { color: #a35b00; font-weight: 700; }
 </style>
 </head>
@@ -35,6 +36,12 @@
 
 {% if just_ran %}
 <div class="banner">已运行 dispatcher.py（{{ "dry-run" if dry_run else "真实执行" }}），输出见下方日志区。</div>
+{% endif %}
+{% if config_success %}
+<div class="banner">{{ config_success }}</div>
+{% endif %}
+{% if roundtable_error %}
+<div class="banner banner-error">{{ roundtable_error }}</div>
 {% endif %}
 
 <h2>@ 唤起（对话内角色，不在这个页面上操作）</h2>

@@ -363,6 +363,7 @@ def render_chat(conversation_id: str | None = None, force_new: bool = False, **e
     # 后台线程执行途中失败的错误，原始请求早就返回了，走 _last_run_error / _last_draft_error。
     error = session.pop("roundtable_error", None) or _pop_last_error()
     draft_error = session.pop("draft_error", None) or _pop_draft_error()
+    config_success = session.pop("config_success", None)
 
     conversations = roundtable.load_all_conversations()
 
@@ -385,6 +386,7 @@ def render_chat(conversation_id: str | None = None, force_new: bool = False, **e
         active_conversation_id=active_id,
         meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
         roundtable_error=error,
+        config_success=config_success,
         current_run=_get_current_run(),
         draft_log=load_draft_log(),
         current_draft=_get_current_draft(),
@@ -433,6 +435,8 @@ def render_admin(**extra):
         review_state=review_state,
         last_daily_batch_date=_last_daily_batch_date,
         rag_rebuild_results=session.pop("rag_rebuild_results", None),
+        roundtable_error=session.pop("roundtable_error", None),
+        config_success=session.pop("config_success", None),
         **extra,
     )
 
@@ -1269,7 +1273,7 @@ def _persistence_warning_for_path(value: str) -> str | None:
 def config_set():
     value = _normalize_path_input(request.form.get("meeting_minutes_dir", ""))
     if not value:
-        logger.warning("UI：会议纪要目录表单提交了空值，已忽略")
+        session["roundtable_error"] = "会议纪要目录不能为空，没有保存。"
         return redirect(request.referrer or url_for("index"))
 
     config, load_error = _load_config_for_update()
@@ -1281,14 +1285,23 @@ def config_set():
         )
         return redirect(request.referrer or url_for("index"))
 
+    try:
+        Path(value).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error(f"UI：会议纪要目录创建失败：{value!r}，{exc}")
+        session["roundtable_error"] = f"目录创建失败（{exc}），没有保存这次设置，检查一下路径是否合法。"
+        return redirect(request.referrer or url_for("index"))
+
     config["MEETING_MINUTES_DIR"] = value
     _write_config_with_backup(config)
-    Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：MEETING_MINUTES_DIR 已设置为 {value}（首次配置，之后不再需要重复问）")
+
     warning = _persistence_warning_for_path(value)
     if warning:
         logger.warning(f"UI：{warning}")
         session["roundtable_error"] = warning
+    else:
+        session["config_success"] = f"会议纪要目录已保存：{value}"
     return redirect(request.referrer or url_for("index"))
 
 
@@ -1299,7 +1312,7 @@ def config_set_toutiao_drafts_dir():
     """
     value = _normalize_path_input(request.form.get("toutiao_drafts_dir", ""))
     if not value:
-        logger.warning("UI：头条草稿目录表单提交了空值，已忽略")
+        session["roundtable_error"] = "头条草稿目录不能为空，没有保存。"
         return redirect(request.referrer or url_for("admin"))
 
     config, load_error = _load_config_for_update()
@@ -1311,14 +1324,23 @@ def config_set_toutiao_drafts_dir():
         )
         return redirect(request.referrer or url_for("admin"))
 
+    try:
+        Path(value).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error(f"UI：头条草稿目录创建失败：{value!r}，{exc}")
+        session["roundtable_error"] = f"目录创建失败（{exc}），没有保存这次设置，检查一下路径是否合法。"
+        return redirect(request.referrer or url_for("admin"))
+
     config["TOUTIAO_DRAFTS_DIR"] = value
     _write_config_with_backup(config)
-    Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：TOUTIAO_DRAFTS_DIR 已设置为 {value}")
+
     warning = _persistence_warning_for_path(value)
     if warning:
         logger.warning(f"UI：{warning}")
         session["roundtable_error"] = warning
+    else:
+        session["config_success"] = f"头条草稿目录已保存：{value}"
     return redirect(request.referrer or url_for("admin"))
 
 
