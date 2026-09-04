@@ -222,8 +222,18 @@ def execute_ops_assistant_from_minutes(minutes_path: str, api_key: str) -> dict:
 
     try:
         title, html = adapt_draft_to_wechat(draft, api_key)
+        # 先把生成的 HTML 本地存一份、再真的调微信接口建草稿——即使微信那边调用失败
+        # （网络、凭据、素材上传……任何一环），本地这份内容仍然留着，供预览用；
+        # 顺序反过来的话，微信调用失败时用户会连"到底生成了什么"都看不到，只能看
+        # 一段报错文字。
+        wechat_slug = re.sub(r"[^\w一-鿿-]", "-", path.stem)[:40].strip("-") or "untitled"
+        wechat_preview_path = publishers.get_toutiao_drafts_dir() / f"wechat_from_minutes_{wechat_slug}.html"
+        wechat_preview_path.parent.mkdir(parents=True, exist_ok=True)
+        wechat_preview_path.write_text(html, encoding="utf-8")
+        results["wechat_preview_path"] = str(wechat_preview_path)
+
         results["wechat"] = publishers.publish_wechat_draft(title, html)
-        logger.info(f"[ops-assistant] 从会议纪要生成公众号草稿成功：{title!r}")
+        logger.info(f"[ops-assistant] 从会议纪要生成公众号草稿成功：{title!r}，本地预览：{wechat_preview_path}")
     except publishers.PublishError as exc:
         logger.warning(f"[ops-assistant] 从会议纪要生成公众号草稿失败：{exc}")
         results["wechat_error"] = str(exc)

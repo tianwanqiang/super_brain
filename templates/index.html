@@ -488,8 +488,21 @@
       <button type="button" class="copy-path-btn" data-path="{{ draft.result.toutiao }}">复制路径</button><br>
       {% endif %}
       {% if draft.result.toutiao_error %}<span class="err">头条草稿生成失败：{{ draft.result.toutiao_error }}</span><br>{% endif %}
-      {% if draft.result.wechat %}公众号草稿已建好（draft_media_id: {{ draft.result.wechat.draft_media_id }}），去公众号后台"草稿箱"查看<br>{% endif %}
-      {% if draft.result.wechat_error %}<span class="err">公众号草稿生成失败：{{ draft.result.wechat_error }}</span><br>{% endif %}
+      {% if draft.result.wechat %}
+      公众号草稿已建好（draft_media_id: {{ draft.result.wechat.draft_media_id }}），去公众号后台"草稿箱"查看
+      {% if draft.result.wechat_preview_path %}
+      <a href="{{ url_for('draft_preview', path=draft.result.wechat_preview_path) }}" target="_blank">预览 →</a>
+      {% endif %}
+      <br>
+      {% endif %}
+      {% if draft.result.wechat_error %}
+      <span class="err">公众号草稿生成失败：{{ draft.result.wechat_error }}</span>
+      {% if draft.result.wechat_preview_path %}
+      （内容已在本地生成，未能真的建到微信草稿箱——
+      <a href="{{ url_for('draft_preview', path=draft.result.wechat_preview_path) }}" target="_blank">预览 →</a>）
+      {% endif %}
+      <br>
+      {% endif %}
     </div>
     {% else %}
     <form class="draft-form" method="post" action="{{ url_for('minutes_draft') }}">
