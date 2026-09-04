@@ -43,7 +43,7 @@ import review
 import roundtable
 import tasks
 import video_prompt
-from log_setup import configure_logging
+from log_setup import LOG_FILE, configure_logging
 from paths import AGENTS_DIR, DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
 
 configure_logging()
@@ -188,7 +188,6 @@ def _pop_draft_error() -> str | None:
 
 
 INBOX = SUPER_BRAIN / "inbox.md"
-LOG_FILE = SUPER_BRAIN / "logs" / "super_brain.log"
 DISPATCHER_SCRIPT = SUPER_BRAIN / "dispatcher.py"
 CONFIG_PATH = SUPER_BRAIN / "config.json"
 DRAFT_LOG_DIR = SUPER_BRAIN / "draft_log"
@@ -219,6 +218,35 @@ def load_config_safe() -> dict:
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning(f"UI：读取 config.json 失败，当作空配置处理：{exc}")
         return {}
+
+
+def _load_config_for_update() -> tuple[dict | None, str | None]:
+    """给"改一个字段、写回整个文件"这类保存路径用——跟 load_config_safe() 不一样，
+    不能把"文件存在但读取失败"悄悄当成空配置返回，否则调用方会把这份假的空配置整个写回去，
+    把 config.json 里已有的其他字段（尤其是各种 API_KEY）全部覆盖丢失。这是 2026-09-04
+    真实发生过的事故：设置会议纪要目录时把已有的 API_KEY 覆盖掉了。
+
+    返回 (config, None) 表示可以安全地在这份 config 基础上改字段再写回；
+    返回 (None, 错误信息) 表示不能继续写，调用方应该原样中止、不碰 config.json。
+    """
+    if not CONFIG_PATH.exists():
+        return {}, None
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")), None
+    except (json.JSONDecodeError, OSError) as exc:
+        return None, str(exc)
+
+
+def _write_config_with_backup(config: dict) -> None:
+    """写 config.json 前先把当前文件备份成 config.json.bak（只保留最近一份，不是历史
+    版本链）——防止这次写入内容本身有问题、或者以后又出现类似覆盖丢失的 bug 时还有得救。
+    """
+    if CONFIG_PATH.exists():
+        try:
+            CONFIG_PATH.replace(CONFIG_PATH.parent / (CONFIG_PATH.name + ".bak"))
+        except OSError:
+            logger.warning("UI：备份 config.json 失败，继续写入（不阻塞正常保存流程）")
+    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def parse_all_messages_for_display() -> list[dict]:
@@ -1164,16 +1192,36 @@ def dispatcher_run():
     return render_admin(recent_log=output, just_ran=True, dry_run=dry_run)
 
 
+def _normalize_path_input(value: str) -> str:
+    """去掉路径输入两端多余的引号——真实发生过的问题：从 `ls` 输出（GNU coreutils 对含
+    反斜杠等特殊字符的文件名默认会加单引号）或 Windows"复制为路径"里粘贴过来的值，会带上
+    字面意义上的引号字符，直接存进 config.json 会变成路径的一部分，导致目录建错地方。
+    只剥一层两端对称的引号（'...' 或 "..."），不处理路径中间的引号。
+    """
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    return value
+
+
 @app.route("/config/set", methods=["POST"])
 def config_set():
-    value = request.form.get("meeting_minutes_dir", "").strip()
+    value = _normalize_path_input(request.form.get("meeting_minutes_dir", ""))
     if not value:
         logger.warning("UI：会议纪要目录表单提交了空值，已忽略")
         return redirect(request.referrer or url_for("index"))
 
-    config = load_config_safe()
+    config, load_error = _load_config_for_update()
+    if load_error is not None:
+        logger.error(f"UI：config.json 读取失败，拒绝写入以免覆盖已有配置：{load_error}")
+        session["roundtable_error"] = (
+            f"config.json 读取失败（{load_error}），为了不覆盖已有的 API_KEY 等配置，"
+            "这次的目录设置没有保存——请先手动检查/修复服务器上的 config.json。"
+        )
+        return redirect(request.referrer or url_for("index"))
+
     config["MEETING_MINUTES_DIR"] = value
-    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_config_with_backup(config)
     Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：MEETING_MINUTES_DIR 已设置为 {value}（首次配置，之后不再需要重复问）")
     return redirect(request.referrer or url_for("index"))
@@ -1184,14 +1232,22 @@ def config_set_toutiao_drafts_dir():
     """头条草稿存放目录——不像会议纪要目录那样是硬性必填项，没设置就用历史默认值兜底，
     设置了就迁移过去（publishers.get_toutiao_drafts_dir() 读的是这同一个 key）。
     """
-    value = request.form.get("toutiao_drafts_dir", "").strip()
+    value = _normalize_path_input(request.form.get("toutiao_drafts_dir", ""))
     if not value:
         logger.warning("UI：头条草稿目录表单提交了空值，已忽略")
         return redirect(request.referrer or url_for("admin"))
 
-    config = load_config_safe()
+    config, load_error = _load_config_for_update()
+    if load_error is not None:
+        logger.error(f"UI：config.json 读取失败，拒绝写入以免覆盖已有配置：{load_error}")
+        session["roundtable_error"] = (
+            f"config.json 读取失败（{load_error}），为了不覆盖已有的 API_KEY 等配置，"
+            "这次的目录设置没有保存——请先手动检查/修复服务器上的 config.json。"
+        )
+        return redirect(request.referrer or url_for("admin"))
+
     config["TOUTIAO_DRAFTS_DIR"] = value
-    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_config_with_backup(config)
     Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：TOUTIAO_DRAFTS_DIR 已设置为 {value}")
     return redirect(request.referrer or url_for("admin"))
@@ -1226,8 +1282,13 @@ def draft_preview():
     return render_template("draft_preview.html", path=str(target), content=content)
 
 
-threading.Thread(target=_daily_batch_scheduler_loop, daemon=True).start()
-logger.info("每日 18 点批量汇总的调度线程已启动（每分钟检查一次）")
+# pytest 会自动设置 PYTEST_CURRENT_TEST 这个环境变量——测试文件 import ui_app 时必须
+# 跳过这一步，否则会启动一个真实的后台线程，一旦测试恰好在过了本机 18 点之后运行，
+# 会触发真实的、要花钱的 DeepSeek 批量调用，不是测试应该产生的副作用。正常运行（gunicorn/
+# 本机 python ui_app.py）不会有这个环境变量，行为不受影响。
+if not os.environ.get("PYTEST_CURRENT_TEST"):
+    threading.Thread(target=_daily_batch_scheduler_loop, daemon=True).start()
+    logger.info("每日 18 点批量汇总的调度线程已启动（每分钟检查一次）")
 
 if __name__ == "__main__":
     # 本机开发默认只监听 127.0.0.1（不对局域网/公网开放）；容器部署时 Dockerfile 会把

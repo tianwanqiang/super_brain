@@ -11,9 +11,10 @@ super_brain 共享日志配置。
 """
 import logging
 import sys
-from pathlib import Path
 
-LOG_DIR = Path(r"G:\code\super_brain\logs")
+from paths import SUPER_BRAIN
+
+LOG_DIR = SUPER_BRAIN / "logs"
 LOG_FILE = LOG_DIR / "super_brain.log"
 
 _configured = False

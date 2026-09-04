@@ -4,6 +4,8 @@ __pycache__/
 
 # 真实凭据（微信 appid/key、默认封面图等），不能进公开仓库
 config.json
+# 写 config.json 前的自动备份（同样含真实凭据，见 ui_app.py 的 _write_config_with_backup）
+config.json.bak
 
 # dispatcher.py 运行时生成的建议草稿，不需要进版本控制
 dispatch_log/
