@@ -66,7 +66,7 @@
 </div>
 {% endif %}
 <form class="inline" method="post" action="{{ url_for('config_set') }}">
-  <input type="text" name="meeting_minutes_dir" placeholder="例如 /opt/super_brain/meeting-minutes（本机开发用 G:\code\meeting-minutes）" value="{{ meeting_minutes_dir or '' }}" required>
+  <input type="text" name="meeting_minutes_dir" placeholder="服务器上填容器内路径，例如 /app/meeting-minutes（本机开发用 G:\code\meeting-minutes）" value="{{ meeting_minutes_dir or '' }}" required>
   <button type="submit">保存到 config.json</button>
 </form>
 
@@ -75,7 +75,7 @@
 {% if not toutiao_drafts_dir_configured %}（还没手动配置过，用的是历史默认目录——想迁移到别的位置，在下面设一次就行）{% endif %}
 </p>
 <form class="inline" method="post" action="{{ url_for('config_set_toutiao_drafts_dir') }}">
-  <input type="text" name="toutiao_drafts_dir" placeholder="例如 G:\code\my-drafts" value="{{ toutiao_drafts_dir_configured or '' }}">
+  <input type="text" name="toutiao_drafts_dir" placeholder="服务器上填容器内路径，例如 /app/toutiao-drafts（本机开发用 G:\code\my-drafts）" value="{{ toutiao_drafts_dir_configured or '' }}">
   <button type="submit">保存到 config.json</button>
 </form>
 

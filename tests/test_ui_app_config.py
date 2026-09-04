@@ -99,3 +99,28 @@ def test_write_config_with_backup_first_write_has_no_backup_yet(fake_config_path
 )
 def test_normalize_path_input_strips_only_matching_surrounding_quotes(raw, expected):
     assert ui_app._normalize_path_input(raw) == expected
+
+
+class TestPersistenceWarning:
+    """_persistence_warning_for_path()：docker-compose.yml 只把 SUPER_BRAIN 这一个目录
+    挂载到宿主机磁盘上，配置成其它路径的话，内容会在下次部署重建容器时被清空。这是
+    2026-09-04 真实发生过的事故——DEPLOYMENT.md 曾经给的示例路径本身就配错了（宿主机
+    路径 /opt/super_brain/... 而不是容器内路径 /app/...）。
+    """
+
+    def test_path_under_super_brain_has_no_warning(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(ui_app, "SUPER_BRAIN", tmp_path)
+        warning = ui_app._persistence_warning_for_path(str(tmp_path / "meeting_minutes"))
+        assert warning is None
+
+    def test_super_brain_itself_has_no_warning(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(ui_app, "SUPER_BRAIN", tmp_path)
+        assert ui_app._persistence_warning_for_path(str(tmp_path)) is None
+
+    def test_path_outside_super_brain_gets_a_warning(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(ui_app, "SUPER_BRAIN", tmp_path / "app")
+        outside = tmp_path / "somewhere-else" / "meeting_minutes"
+        warning = ui_app._persistence_warning_for_path(str(outside))
+        assert warning is not None
+        assert "部署" in warning
+

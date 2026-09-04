@@ -32,7 +32,7 @@
      "WECHAT_APP_ID": "...",
      "WECHAT_APP_KEY": "...",
      "WECHAT_DEFAULT_COVER_URL": "...",
-     "MEETING_MINUTES_DIR": "/opt/super_brain/meeting_minutes",
+     "MEETING_MINUTES_DIR": "/app/meeting_minutes",
      "DASHSCOPE_API_KEY": "阿里云百炼的 API Key（sk- 开头，文本向量化用）",
      "DASHSCOPE_WORKSPACE_ID": "阿里云百炼的 WorkspaceId",
      "DASHVECTOR_API_KEY": "DashVector 集群的 API Key（跟 DashScope 是两个独立凭据，别混）",
@@ -40,6 +40,15 @@
    }
    ```
    后四个字段是 RAG 检索用的，不配的话 RAG 相关功能不可用，其余功能不受影响。
+
+   **`MEETING_MINUTES_DIR`（以及后面会讲到的 `TOUTIAO_DRAFTS_DIR`）必须填容器内的路径**
+   （`/app/...` 开头），不能填服务器上的真实路径（`/opt/super_brain/...`）——虽然
+   `docker-compose.yml` 把 `/opt/super_brain`（宿主机）整个挂载成了容器里的 `/app`，
+   两者指向的是同一份磁盘数据，但 Python 进程是在**容器里**读这个配置值的，容器里
+   压根不存在 `/opt/super_brain` 这个路径。填成宿主机路径的后果：这个目录会在容器
+   自己的临时文件层里新建一个空目录（不是宿主机上那份），CI/CD 每次部署都会
+   `docker compose up -d --build` 重建容器，这个临时目录连同里面所有内容会**每次
+   部署都被清空**——不会报错，只是安安静静地把之前生成的会议纪要全部丢光。
 7. 建一个 `.env` 文件（docker-compose 会自动读取），设登录密码和固定的 session 密钥：
    ```bash
    cat > /opt/super_brain/.env <<'EOF'

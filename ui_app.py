@@ -1204,6 +1204,30 @@ def _normalize_path_input(value: str) -> str:
     return value
 
 
+def _persistence_warning_for_path(value: str) -> str | None:
+    """docker-compose.yml 只把整个仓库目录挂载成容器里的 SUPER_BRAIN（本机是 G:\\code\\
+    super_brain，服务器是 /app）——只有这条路径下的内容会落在宿主机磁盘上，CI/CD 每次
+    `docker compose up -d --build` 都会重建容器，容器自己文件系统里其它地方新建的目录
+    会被整个清空。这是真实发生过的事故：DEPLOYMENT.md 曾经给的示例路径是宿主机路径
+    `/opt/super_brain/...`，但这个值是在容器里的 Python 进程读的，容器里根本没有
+    `/opt/super_brain` 这个路径，实际建到了容器临时文件系统里，每次部署都被清空。
+
+    这里只做温和提醒，不阻止保存——不排除少数场景下用户确实配了别的持久化挂载点。
+    """
+    try:
+        resolved = Path(value).resolve()
+        root = SUPER_BRAIN.resolve()
+    except OSError:
+        return None
+    if resolved == root or root in resolved.parents:
+        return None
+    return (
+        f"已保存，但这个路径（{value}）不在 {root} 之下——docker-compose.yml 只把这个目录"
+        "挂载到了宿主机磁盘上，其它位置的内容会在下次部署（docker compose up -d --build）"
+        "时被清空。如果这是在服务器上配置，建议改成 /app 开头的路径（比如 /app/meeting-minutes）。"
+    )
+
+
 @app.route("/config/set", methods=["POST"])
 def config_set():
     value = _normalize_path_input(request.form.get("meeting_minutes_dir", ""))
@@ -1224,6 +1248,10 @@ def config_set():
     _write_config_with_backup(config)
     Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：MEETING_MINUTES_DIR 已设置为 {value}（首次配置，之后不再需要重复问）")
+    warning = _persistence_warning_for_path(value)
+    if warning:
+        logger.warning(f"UI：{warning}")
+        session["roundtable_error"] = warning
     return redirect(request.referrer or url_for("index"))
 
 
@@ -1250,6 +1278,10 @@ def config_set_toutiao_drafts_dir():
     _write_config_with_backup(config)
     Path(value).mkdir(parents=True, exist_ok=True)
     logger.info(f"UI：TOUTIAO_DRAFTS_DIR 已设置为 {value}")
+    warning = _persistence_warning_for_path(value)
+    if warning:
+        logger.warning(f"UI：{warning}")
+        session["roundtable_error"] = warning
     return redirect(request.referrer or url_for("admin"))
 
 

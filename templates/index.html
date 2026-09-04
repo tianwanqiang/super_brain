@@ -338,7 +338,7 @@
 <div class="banner banner-warn">
   还没设置会议纪要存放目录——圆桌讨论仍会正常进行，但正式纪要文档不会落盘。设一次就够了：
   <form method="post" action="{{ url_for('config_set') }}">
-    <input type="text" name="meeting_minutes_dir" placeholder="例如 /opt/super_brain/meeting-minutes（本机开发用 G:\code\meeting-minutes）" required>
+    <input type="text" name="meeting_minutes_dir" placeholder="服务器上填容器内路径，例如 /app/meeting-minutes（本机开发用 G:\code\meeting-minutes）" required>
     <button type="submit">保存</button>
   </form>
 </div>
