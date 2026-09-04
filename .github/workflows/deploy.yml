@@ -46,4 +46,13 @@ jobs:
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
             git fetch origin main
             git reset --hard origin/main
+
+            # 校验服务器上真实的 config.json——这是 GitHub Actions 那个 test job 做不到的事，
+            # 那个 job 跑在云端全新 checkout 出来的仓库里，物理上碰不到这台服务器的真实文件。
+            # 这里直接在服务器本机、对着真实文件跑（不在容器里跑：容器这时候还没重建，且这个
+            # 检查本身只依赖标准库，host 上的 python3 就够）。SUPER_BRAIN_DIR 显式指向部署目录，
+            # 不依赖任何环境变量默认值——检查不过（比如 DEEPSEEK_API_KEY 缺失/config.json 损坏），
+            # `set -e` 会让整个脚本在这一步中止，不会往下重启服务，避免用一份坏配置重启线上服务。
+            SUPER_BRAIN_DIR="${{ secrets.SERVER_DEPLOY_PATH }}" python3 config_check.py
+
             docker compose up -d --build
