@@ -57,7 +57,10 @@ jobs:
             || ssh $SSH_OPTS "$USER@$HOST" \
             "command -v rsync >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq rsync; }"
 
-          rsync -az --delete --checksum \
+          # 不用 -a（-a 会尝试 set times/owner/perms，非所有者文件会报 Operation not permitted）。
+          # 只需：递归 -r、校验和比较 --checksum、删多余 --delete、压缩 -z。内容一致即可，
+          # 文件时间戳/属主对运行无影响（数据/凭据文件本就在排除清单里不会被覆盖）。
+          rsync -rlz --delete --checksum \
             -e "ssh -i ~/.ssh/super_brain_deploy -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
             --exclude-from=.github/deploy-exclude.txt \
             ./ "$USER@$HOST:$DEST/"
