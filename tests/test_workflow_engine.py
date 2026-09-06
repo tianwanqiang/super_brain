@@ -189,6 +189,23 @@ def test_step_failure_marks_failed_then_retry_recovers(env, monkeypatch):
     assert _step(r, "research")["status"] == wf.ST_AWAITING
 
 
+def test_advance_with_fake_handlers_needs_no_deepseek_key(env, monkeypatch):
+    """回归（CI Linux fresh checkout 无 config.json）：假处理器测试推进流程时，
+    引擎绝不应该主动去加载 DeepSeek key（否则没 key 就 ValueError 崩掉）。"""
+    config_path = env / "config.json"
+    if config_path.exists():
+        config_path.unlink()                       # 明确"没有配置文件"环境
+
+    def _boom(*a, **k):
+        raise AssertionError("不该触发 key 加载——本测试步骤全是假处理器")
+
+    monkeypatch.setattr(wf.llm_client, "load_deepseek_api_key", _boom)
+    run = wf.create_run(wf.DEFAULT_WORKFLOW_ID)
+    wf.advance(run["run_id"])
+    r = wf.load_run(run["run_id"])
+    assert _step(r, "topics")["status"] == wf.ST_AWAITING   # 正常产出候选停在审批口
+
+
 def test_redo_awaiting_step_runs_again(env, monkeypatch):
     """等待审批的步骤可"重跑该步"：覆盖旧产物再等审批（解决产物为空/不满意）。"""
     _write_config(env, {})

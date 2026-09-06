@@ -221,7 +221,15 @@ def _handle_topics(ctx: dict) -> dict:
         "现在值得写、目标读者（一人公司老板/内容创作者）会点开。\n"
         "严格按行输出，每行格式：- 标题 | 一句话理由\n不要输出任何其它文字。"
     )
-    raw = llm_client.call_deepseek(system_prompt, user_prompt, ctx.get("api_key"), max_tokens=3000,
+    # key 只在此步骤真需要调用 LLM 时解析（失败→该步 failed 并给清楚原因）；
+    # 这样无 LLM 的步骤 / 假处理器测试在无 key 环境（CI）也能跑。
+    api_key = ctx.get("api_key")
+    if not api_key:
+        try:
+            api_key = llm_client.load_deepseek_api_key()
+        except llm_client.DeepSeekConfigError as exc:
+            raise ValueError(f"DeepSeek 未配置：{exc}") from exc
+    raw = llm_client.call_deepseek(system_prompt, user_prompt, api_key, max_tokens=3000,
                                    model=llm_client.structured_model_override())
     candidates = []
     for line in raw.splitlines():
@@ -395,13 +403,10 @@ def _execute_step(run: dict, step_index: int, api_key: str | None = None) -> Non
 
 def advance(run_id: str, api_key: str | None = None) -> dict:
     """从第一个 pending 步骤开始推进：产出→审批口/自动继续，直到需要审批、出错或全部完成。
-    返回最新 run dict。api_key 未传时自动从 config 加载（避免调用方漏传导致 401）。
-    调用方在 UI 里执行时传 api_key（真实调用会花额度）。"""
-    if api_key is None:
-        try:
-            api_key = llm_client.load_deepseek_api_key()
-        except llm_client.DeepSeekConfigError as exc:
-            raise ValueError(f"DeepSeek 未配置：{exc}") from exc
+    返回最新 run dict。api_key 可选：真正需要调 LLM 的步骤处理器会自行从 config 加载
+    （加载失败 → 该步骤 failed 并给出"DeepSeek 未配置"原因），因此无 LLM 的步骤/假处理器
+    测试在没有任何 key 的环境（如 CI fresh checkout）也能正常跑。调用方在 UI 里执行时传
+    api_key（真实调用会花额度）。"""
     run = load_run(run_id)
     if run is None:
         raise ValueError(f"运行实例不存在：{run_id}")
