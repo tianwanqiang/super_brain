@@ -1,0 +1,33 @@
+# rsync --exclude-from 清单：同步代码时**绝不**删除/覆盖服务器上的个人数据与配置
+# （rsync --delete 只清理这些之外、服务器上多余的文件 = 已被代码库删除的旧文件）
+.git/
+.env
+config.json
+config.json.bak
+__pycache__/
+*.pyc
+.pytest_cache/
+logs/
+dispatch_log/
+draft_log/
+conversations/
+daily_digests/
+roundtable_log/
+video_prompt_conversations/
+private_chat_conversations/
+tasks.yaml
+meeting/
+workflow_runs/
+content_pipeline_runs/
+autopublish_queue/
+autopublish_artifacts/
+autopublish_sources/
+wechat_drafts/
+task_drafts/
+agents/*/lessons.md
+agents/*/reviews/
+agents/*/rag_chunks.json
+agents/*/rag_index.npy
+agents/*/rag_retrieval_log.jsonl
+static/covers/*
+!static/covers/default_cover.png

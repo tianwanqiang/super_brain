@@ -30,57 +30,49 @@ jobs:
     needs: test  # 测试没过，这个 job 不会跑，服务器上的代码不会被这次改动覆盖
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: 调试 - 打印这次运行的出口 IP（用于跟服务器安全告警的 IP 核对）
         run: |
           echo "这台 GitHub Actions 运行环境的出口 IP："
           curl -s https://api.ipify.org
           echo ""
 
-      - name: SSH 到服务器拉最新代码并重启容器
+      # 方案 C：Actions 直推服务器。代码从 Actions checkout（就是本次 commit），
+      # 经 rsync/SSH 直接同步到服务器——服务器完全不访问 GitHub，无代理/封锁问题。
+      - name: rsync 同步代码到服务器（服务器不碰 GitHub）
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/super_brain_deploy
+          chmod 600 ~/.ssh/super_brain_deploy
+          HOST="${{ secrets.SERVER_HOST }}"
+          USER="${{ secrets.SERVER_USER }}"
+          DEST="${{ secrets.SERVER_DEPLOY_PATH }}"
+          SSH_OPTS="-i ~/.ssh/super_brain_deploy -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+          # 服务器上没有 rsync 就先装（用户通常是 root；非 root 且无 sudo 时请预装一次）
+          ssh $SSH_OPTS "$USER@$HOST" \
+            "command -v rsync >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq rsync; }" \
+            || ssh $SSH_OPTS "$USER@$HOST" \
+            "command -v rsync >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq rsync; }"
+
+          rsync -az --delete --checksum \
+            -e "ssh -i ~/.ssh/super_brain_deploy -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
+            --exclude-from=.github/deploy-exclude.txt \
+            ./ "$USER@$HOST:$DEST/"
+          echo "[deploy] rsync 完成（commit: ${{ github.sha }}）"
+
+      - name: 服务器本地校验配置并重启容器
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
-          # 默认 10 分钟——2026-09-02 那次被打断是因为当时还依赖 torch/sentence-transformers，
-          # 这两个重依赖已经在 2026-09-03 换成阿里云 DashScope/DashVector 云端服务后移除，
-          # 现在 docker build 应该明显更快；30m 留着是保守冗余，不是仍然需要这么久。
           command_timeout: 30m
           script: |
             set -e
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
-
-            # Actions 这次运行的真实 commit——部署只认它，不认 origin/main 的"最新"。
-            # 这样即使走的是身份不明的代理/镜像：只要对方给的不是这棵历史（改过代码），
-            # checkout 就失败、中止部署，从根上防供应链投毒。
-            DEPLOY_SHA="${{ github.sha }}"
-            echo "[deploy] 目标 commit: $DEPLOY_SHA"
-
-            # 国内服务器直连 github.com 经常断（443 超时）——支持可选代理 secret，
-            # 并在仓库 secret 里配了 SERVER_HTTPS_PROXY 时自动走代理。
-            if [ -n "${{ secrets.SERVER_HTTPS_PROXY }}" ]; then
-              export https_proxy="${{ secrets.SERVER_HTTPS_PROXY }}"
-              export http_proxy="${{ secrets.SERVER_HTTPS_PROXY }}"
-              echo "使用代理拉取代码"
-            fi
-
-            # git fetch 加重试 + 低网速容忍（github 被墙/波动时一次失败就退出太脆）
-            FETCH_OK=0
-            for i in 1 2 3 4 5; do
-              echo "[deploy] git fetch 第 $i/5 次..."
-              if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=120 fetch origin main; then
-                FETCH_OK=1
-                break
-              fi
-              sleep 12
-            done
-            if [ "$FETCH_OK" != "1" ]; then
-              echo "[deploy] 连续 5 次连不上 github.com（或你配置的镜像），中止部署——服务保持旧版本运行。"
-              exit 1
-            fi
-            # 校验 Actions 声明的 commit 真实存在；然后锁定到它（防代理/镜像篡改 main）
-            git cat-file -e "${DEPLOY_SHA}^{commit}" || { echo "目标 commit 不存在，拒绝部署（疑似来源被篡改）"; exit 1; }
-            git reset --hard "$DEPLOY_SHA"
 
             # 校验服务器上真实的 config.json——这是 GitHub Actions 那个 test job 做不到的事，
             # 那个 job 跑在云端全新 checkout 出来的仓库里，物理上碰不到这台服务器的真实文件。
