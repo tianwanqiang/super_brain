@@ -50,6 +50,12 @@ jobs:
             set -e
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
 
+            # Actions 这次运行的真实 commit——部署只认它，不认 origin/main 的"最新"。
+            # 这样即使走的是身份不明的代理/镜像：只要对方给的不是这棵历史（改过代码），
+            # checkout 就失败、中止部署，从根上防供应链投毒。
+            DEPLOY_SHA="${{ github.sha }}"
+            echo "[deploy] 目标 commit: $DEPLOY_SHA"
+
             # 国内服务器直连 github.com 经常断（443 超时）——支持可选代理 secret，
             # 并在仓库 secret 里配了 SERVER_HTTPS_PROXY 时自动走代理。
             if [ -n "${{ secrets.SERVER_HTTPS_PROXY }}" ]; then
@@ -72,7 +78,9 @@ jobs:
               echo "[deploy] 连续 5 次连不上 github.com（或你配置的镜像），中止部署——服务保持旧版本运行。"
               exit 1
             fi
-            git reset --hard origin/main
+            # 校验 Actions 声明的 commit 真实存在；然后锁定到它（防代理/镜像篡改 main）
+            git cat-file -e "${DEPLOY_SHA}^{commit}" || { echo "目标 commit 不存在，拒绝部署（疑似来源被篡改）"; exit 1; }
+            git reset --hard "$DEPLOY_SHA"
 
             # 校验服务器上真实的 config.json——这是 GitHub Actions 那个 test job 做不到的事，
             # 那个 job 跑在云端全新 checkout 出来的仓库里，物理上碰不到这台服务器的真实文件。
