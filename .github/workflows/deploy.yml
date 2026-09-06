@@ -49,7 +49,29 @@ jobs:
           script: |
             set -e
             cd "${{ secrets.SERVER_DEPLOY_PATH }}"
-            git fetch origin main
+
+            # 国内服务器直连 github.com 经常断（443 超时）——支持可选代理 secret，
+            # 并在仓库 secret 里配了 SERVER_HTTPS_PROXY 时自动走代理。
+            if [ -n "${{ secrets.SERVER_HTTPS_PROXY }}" ]; then
+              export https_proxy="${{ secrets.SERVER_HTTPS_PROXY }}"
+              export http_proxy="${{ secrets.SERVER_HTTPS_PROXY }}"
+              echo "使用代理拉取代码"
+            fi
+
+            # git fetch 加重试 + 低网速容忍（github 被墙/波动时一次失败就退出太脆）
+            FETCH_OK=0
+            for i in 1 2 3 4 5; do
+              echo "[deploy] git fetch 第 $i/5 次..."
+              if git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=120 fetch origin main; then
+                FETCH_OK=1
+                break
+              fi
+              sleep 12
+            done
+            if [ "$FETCH_OK" != "1" ]; then
+              echo "[deploy] 连续 5 次连不上 github.com（或你配置的镜像），中止部署——服务保持旧版本运行。"
+              exit 1
+            fi
             git reset --hard origin/main
 
             # 校验服务器上真实的 config.json——这是 GitHub Actions 那个 test job 做不到的事，
