@@ -14,11 +14,31 @@ import json
 import logging
 import urllib.request
 
-from paths import DEEPSEEK_CONFIG_PATH, SUPER_BRAIN
+import config_store
+from paths import CONFIG_PATH
 
 logger = logging.getLogger("super_brain.llm_client")
 
-TAVILY_CONFIG_PATH = SUPER_BRAIN / "config.json"
+# ---- config.json 的统一入口（2026-09 收敛）----
+# 路径：唯一权威定义在 paths.CONFIG_PATH，这里 import，不再自己拼 SUPER_BRAIN/"config.json"。
+# 读写：唯一实现是 config_store.read_config_cached()（mtime 缓存：文件没变返回同一份 dict
+# 零 IO，变了自动重读，配置热更新不用重启）。三个 loader 各自保留自己的语义——
+# load_deepseek_api_key 缺配置抛带原因的 DeepSeekConfigError、load_deepseek_settings 缺/
+# 坏配置静默用默认值、load_tavily_api_key 缺配置返回 None 优雅降级。
+
+# 最近一次读取失败的完整原因文案（文件缺失/解析失败/不是对象），供拼错误消息
+_config_read_issue: str = ""
+
+
+def _load_config_cached() -> dict | None:
+    """读 config.json（走 config_store 的 mtime 缓存）。读不出来返回 None，
+    原因文案放进 _config_read_issue（loaders 各自决定怎么报/降级）。"""
+    global _config_read_issue
+    try:
+        return config_store.read_config_cached(path=CONFIG_PATH)
+    except config_store.ConfigReadError as exc:
+        _config_read_issue = str(exc)
+        return None
 
 
 class DeepSeekConfigError(Exception):
@@ -38,24 +58,19 @@ def load_deepseek_api_key() -> str:
 
     这是 2026-09-04 那次"服务器 config.json 缺 DEEPSEEK_API_KEY，圆桌讨论一调用就抛裸
     堆栈"事故之后，把原来分散在 9 个调用点的重复读取逻辑收拢到这一处的产物。
+
+    读取走 config_store 的缓存读（文件没变化时同一份 dict 复用，不重复读盘；改了 mtime
+    自动失效重读，无需重启）。失败时按原因给出不同文案，跟事故复盘时定的三种区分保持一致。
+    字段名 DEEPSEEK_API_KEY 的唯一定义在 config_store.DEEPSEEK_API_KEY_FIELD，这里引用。
     """
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        raise DeepSeekConfigError(f"找不到 DeepSeek 配置文件：{DEEPSEEK_CONFIG_PATH}")
-    try:
-        config = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as exc:
-        raise DeepSeekConfigError(f"{DEEPSEEK_CONFIG_PATH} 读取/解析失败：{exc}") from exc
-    if not isinstance(config, dict):
-        raise DeepSeekConfigError(f"{DEEPSEEK_CONFIG_PATH} 内容不是一个 JSON 对象")
-    api_key = config.get("DEEPSEEK_API_KEY")
+    config = _load_config_cached()
+    if config is None:
+        raise DeepSeekConfigError(_config_read_issue or f"找不到配置文件：{CONFIG_PATH}")
+    api_key = config.get(config_store.DEEPSEEK_API_KEY_FIELD)
     if not api_key or not isinstance(api_key, str) or not api_key.strip():
-        raise DeepSeekConfigError(f"{DEEPSEEK_CONFIG_PATH} 里没有配置 DEEPSEEK_API_KEY 字段（或者是空值）")
+        raise DeepSeekConfigError(
+            f"{CONFIG_PATH} 里没有配置 {config_store.DEEPSEEK_API_KEY_FIELD} 字段（或者是空值）")
     return api_key
-
-
-DEEPSEEK_MODEL_DEFAULT = "deepseek-v4-pro"
-DEEPSEEK_BASE_URL_DEFAULT = "https://api.deepseek.com/v1"
-DEEPSEEK_MAX_TOKENS_DEFAULT = 8000
 
 
 def load_deepseek_settings() -> dict:
@@ -65,34 +80,32 @@ def load_deepseek_settings() -> dict:
     跟 DEEPSEEK_API_KEY（硬性必需，缺了直接抛异常）不是一回事：模型/地址/token 上限
     没配置也能跑，只是用内置的默认组合。
 
-    每次都重新读文件、不做进程内缓存——保持跟 load_deepseek_api_key()/load_tavily_api_key()
-    同样的"配置改了不用重启也能生效"的行为，配置文件很小，重复读取的开销可以忽略。
+    字段名与默认值的唯一定义都在 config_store（DEEPSEEK_MODEL_FIELD/BASE_URL_FIELD/
+    MAX_TOKENS_FIELD + DEEPSEEK_*_DEFAULT），这里只消费，不再各自持有一份常量。
+    读取走 config_store 的缓存读：文件没变化直接复用内存里的 dict，改了 mtime 自动失效
+    重读，"配置热更新不用重启"的行为保持不变；文件缺失/损坏时跟以前一样静默用默认值。
     """
     settings = {
-        "model": DEEPSEEK_MODEL_DEFAULT,
-        "base_url": DEEPSEEK_BASE_URL_DEFAULT,
-        "max_tokens": DEEPSEEK_MAX_TOKENS_DEFAULT,
+        "model": config_store.DEEPSEEK_MODEL_DEFAULT,
+        "base_url": config_store.DEEPSEEK_BASE_URL_DEFAULT,
+        "max_tokens": config_store.DEEPSEEK_MAX_TOKENS_DEFAULT,
     }
-    if not DEEPSEEK_CONFIG_PATH.exists():
-        return settings
-    try:
-        config = json.loads(DEEPSEEK_CONFIG_PATH.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError):
-        return settings
-    if not isinstance(config, dict):
+    config = _load_config_cached()
+    if config is None:
         return settings
 
-    if config.get("Model"):
-        settings["model"] = config["Model"]
-    if config.get("BaseUrl"):
-        settings["base_url"] = config["BaseUrl"]
-    if config.get("MaxTokens"):
+    if config.get(config_store.DEEPSEEK_MODEL_FIELD):
+        settings["model"] = config[config_store.DEEPSEEK_MODEL_FIELD]
+    if config.get(config_store.DEEPSEEK_BASE_URL_FIELD):
+        settings["base_url"] = config[config_store.DEEPSEEK_BASE_URL_FIELD]
+    if config.get(config_store.DEEPSEEK_MAX_TOKENS_FIELD):
         try:
-            settings["max_tokens"] = int(config["MaxTokens"])
+            settings["max_tokens"] = int(config[config_store.DEEPSEEK_MAX_TOKENS_FIELD])
         except (TypeError, ValueError):
             logger.warning(
-                f"config.json 里的 MaxTokens 不是合法数字：{config['MaxTokens']!r}，"
-                f"用内置默认值 {DEEPSEEK_MAX_TOKENS_DEFAULT}"
+                f"config.json 里的 {config_store.DEEPSEEK_MAX_TOKENS_FIELD} 不是合法数字："
+                f"{config[config_store.DEEPSEEK_MAX_TOKENS_FIELD]!r}，"
+                f"用内置默认值 {config_store.DEEPSEEK_MAX_TOKENS_DEFAULT}"
             )
     return settings
 
@@ -264,15 +277,26 @@ def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
 
 
 def load_tavily_api_key() -> str | None:
-    """没配置就返回 None——调用方应该优雅降级（不给模型 web_search 工具），不是报错。"""
-    if not TAVILY_CONFIG_PATH.exists():
-        return None
-    try:
-        config = json.loads(TAVILY_CONFIG_PATH.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError):
+    """没配置就返回 None——调用方应该优雅降级（不给模型 web_search 工具），不是报错。
+    读取同样走模块级缓存（见 _load_config_cached 说明）。"""
+    config = _load_config_cached()
+    if config is None:
         return None
     key = config.get("TAVILY_API_KEY")
     return key or None
+
+
+def structured_model_override() -> str | None:
+    """可选：结构化输出任务（选题候选/事实提取/评分卡/平台格式改写）专用模型。
+    默认 None=跟主模型一致。填更快的非推理模型（如 deepseek-chat）时：
+    - 结构化输出更稳定（不被思考 token 挤掉正文）；
+    - token 成本明显下降（这类任务不需要长篇思考）。
+    读取 config.json 的 ModelStructured 字段（config_store 缓存读）。"""
+    config = _load_config_cached()
+    if config is None:
+        return None
+    value = config.get(config_store.MODEL_STRUCTURED_FIELD)
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def tavily_search(query: str, api_key: str, max_results: int = 5) -> str:

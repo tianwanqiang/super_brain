@@ -94,27 +94,45 @@ def test_log_file_is_inside_log_dir():
     assert out == "True"
 
 
-def test_deepseek_config_path_defaults_to_super_brains_own_config_json():
-    """回归测试：2026-09-04 之前，DEEPSEEK_CONFIG_PATH 本机默认指向兄弟项目 toutiao-agent
-    的 config.json，跟 super_brain 自己的 config.json（CONFIG_PATH/config_check.py 校验
-    的那份）是两个不同的文件——本机测试"DEEPSEEK_API_KEY 字段是否存在"测的其实是不会被
-    真正用到的文件，容易产生假安全感。改成默认就是 SUPER_BRAIN / "config.json"，不再
-    隐式依赖另一个项目是否存在/是否配置过。
+def test_config_path_defaults_to_super_brains_own_config_json():
+    """回归测试：2026-09-04 之前，config 路径本机默认指向兄弟项目 toutiao-agent 的
+    config.json，跟 super_brain 自己的 config.json（config_check.py 校验的那份）是两个
+    不同的文件——本机测试"DEEPSEEK_API_KEY 字段是否存在"测的其实是不会被真正用到的文件，
+    容易产生假安全感。改成默认就是 SUPER_BRAIN / "config.json"，不再隐式依赖另一个项目
+    是否存在/是否配置过。现在唯一权威名是 paths.CONFIG_PATH（DEEPSEEK_CONFIG_PATH 的
+    符号与同名环境变量都已在 2026-09 删除，只留 SUPER_BRAIN_CONFIG_PATH 一个覆盖通道）。
     """
     out = _run_snippet(
         "import paths; "
-        "print(str(paths.DEEPSEEK_CONFIG_PATH) == str(paths.SUPER_BRAIN / 'config.json'))",
+        "print(str(paths.CONFIG_PATH) == str(paths.SUPER_BRAIN / 'config.json'))",
         {"SUPER_BRAIN_DIR": "/opt/super_brain"},
     )
     assert out == "True"
 
 
-def test_deepseek_config_path_still_overridable_via_env_var():
-    """显式设置的 DEEPSEEK_CONFIG_PATH 环境变量必须继续生效——不能因为改了默认值就把
-    "可以覆盖成别的文件"这个能力也一并丢掉。
-    """
+# ---- 2026-09 config 命名收敛：全仓库只有一个 Python 名字 CONFIG_PATH ----
+
+def test_config_path_follows_super_brain_dir():
     out = _run_snippet(
-        "import paths; print(str(paths.DEEPSEEK_CONFIG_PATH))",
-        {"SUPER_BRAIN_DIR": "/opt/super_brain", "DEEPSEEK_CONFIG_PATH": "/somewhere/else/config.json"},
+        "import paths; print(str(paths.CONFIG_PATH))",
+        {"SUPER_BRAIN_DIR": "/opt/super_brain"},
     )
-    assert out.replace("\\", "/") == "/somewhere/else/config.json"
+    assert out.replace("\\", "/") == "/opt/super_brain/config.json"
+
+
+def test_no_legacy_python_alias_remains():
+    """DEEPSEEK_CONFIG_PATH 不允许再作为 Python 符号存在（同一路径只留一个名字）。"""
+    out = _run_snippet(
+        "import paths; print(hasattr(paths, 'DEEPSEEK_CONFIG_PATH'))",
+        {"SUPER_BRAIN_DIR": "/opt/super_brain"},
+    )
+    assert out == "False"
+
+
+def test_super_brain_config_path_env_overrides_default():
+    """唯一的覆盖通道：SUPER_BRAIN_CONFIG_PATH 环境变量把 config 指向别处。"""
+    out = _run_snippet(
+        "import paths; print(str(paths.CONFIG_PATH))",
+        {"SUPER_BRAIN_DIR": "/opt/super_brain", "SUPER_BRAIN_CONFIG_PATH": "/new/place/config.json"},
+    )
+    assert out.replace("\\", "/") == "/new/place/config.json"

@@ -12,10 +12,12 @@ import logging
 import re
 from pathlib import Path
 
+import autopublish
+import content_pipeline
 import publishers
 import video_prompt
 from agent_registry import load_agent_registry, load_private_context, log_execution
-from llm_client import call_deepseek
+from llm_client import call_deepseek, structured_model_override
 from paths import OPC_ROOT, SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.executors")
@@ -28,6 +30,13 @@ def read_opc_content(date: str) -> str | None:
     if not opc_path.exists():
         return None
     return opc_path.read_text(encoding="utf-8-sig")
+
+
+def _structured_model_kwargs() -> dict:
+    """配置了 ModelStructured 时结构化调用带上它；没配置返回 {}（调用签名与以前完全一致，
+    测试里 monkeypatch 的假 call_deepseek 不会被多出来的 model 参数打破）。"""
+    model = structured_model_override()
+    return {"model": model} if model else {}
 
 
 def _apply_user_instruction(content: str, user_instruction: str | None) -> str:
@@ -60,7 +69,8 @@ def generate_content_brief(content: str, api_key: str, user_instruction: str | N
     )
     logger.info("调用 content-strategist 生成策划简报")
     brief = call_deepseek(
-        system_prompt, _apply_user_instruction(content, user_instruction), api_key, max_tokens=1500,
+        system_prompt, _apply_user_instruction(content, user_instruction), api_key,
+        max_tokens=3500, **_structured_model_kwargs(),
     )
     log_execution("content-strategist", "生成策划简报", f"素材长度={len(content)}字")
     return brief
@@ -119,7 +129,8 @@ def adapt_draft_to_toutiao(draft: str, api_key: str) -> str:
         "## 建议标签\n3-5 个适合头条号的标签，逗号分隔。\n\n"
         "## 建议分类\n给出一个最贴合的头条号内容分类（如：职场、科技、创业、AI、数码等）。"
     )
-    return call_deepseek(system_prompt, draft, api_key, max_tokens=12000)
+    return call_deepseek(system_prompt, draft, api_key, max_tokens=12000,
+                         **_structured_model_kwargs())
 
 
 def adapt_draft_to_wechat(draft: str, api_key: str) -> tuple[str, str]:
@@ -136,7 +147,8 @@ def adapt_draft_to_wechat(draft: str, api_key: str) -> tuple[str, str]:
         "输出格式：第一行是文章标题（不要任何前缀符号），空一行，然后是完整 HTML 正文。"
         "不要输出除此之外的任何解释文字。"
     )
-    raw = call_deepseek(system_prompt, draft, api_key, max_tokens=12000)
+    raw = call_deepseek(system_prompt, draft, api_key, max_tokens=12000,
+                        **_structured_model_kwargs())
     parts = raw.strip().split("\n", 2)
     title = parts[0].strip().lstrip("#").strip()
     html = parts[-1].strip() if len(parts) > 1 else ""
@@ -155,7 +167,7 @@ def generate_wechat_html(opc_content: str, api_key: str) -> tuple[str, str]:
     return adapt_draft_to_wechat(draft, api_key)
 
 
-def execute_toutiao_draft(date: str, api_key: str) -> dict:
+def execute_toutiao_draft(date: str, api_key: str, messages: list | None = None) -> dict:
     path = publishers.publish_toutiao_draft(date)
     if path is None:
         log_execution("toutiao", "生成头条草稿", f"opc_{date}.md 不存在，安全跳过", status="skipped")
@@ -164,7 +176,7 @@ def execute_toutiao_draft(date: str, api_key: str) -> dict:
     return {"toutiao": str(path)}
 
 
-def execute_ops_assistant_full(date: str, api_key: str) -> dict:
+def execute_ops_assistant_full(date: str, api_key: str, messages: list | None = None) -> dict:
     results: dict = {}
 
     try:
@@ -192,6 +204,111 @@ def execute_ops_assistant_full(date: str, api_key: str) -> dict:
         status="ok" if ok else "partial_error",
     )
     return results
+
+
+def execute_media_maker_pending(date: str, api_key: str, messages: list | None = None) -> dict:
+    """media-maker 的 inbox/executor 入口（agents.yaml executor: media_maker_pending）——
+    处理当前所有 queued 发布单：生成本地定稿 / mock 视频清单。零成本，可随时手动触发。
+    日期参数沿用 dispatcher 的签名约定（跟 ops-assistant 的 executor 一致），实际处理
+    全部待生产发布单，不按日期过滤（发布单不是按天产生的）。
+    """
+    result = autopublish.run_draft_pending()
+    log_execution("media-maker", "处理待生产发布单", f"produced={len(result['produced'])}，skipped={len(result['skipped'])}")
+    return {"media_maker": result}
+
+
+def execute_publisher_dispatch(date: str, api_key: str, messages: list | None = None) -> dict:
+    """publisher 的 inbox/executor 入口（agents.yaml executor: publisher_dispatch）——
+    把已放行且到点的发布单发出去。受 autopublish 全局主开关约束（没开主开关时如实返回
+    blocked_by_master_switch，不误报成功）。
+    """
+    result = autopublish.run_dispatch_due()
+    if result.get("blocked_by_master_switch"):
+        return {"publisher_blocked": "全局主开关 master_enabled=False，未执行任何发布（安全默认）"}
+    return {"publisher": result}
+
+
+def execute_researcher_apply(date: str, api_key: str, messages: list | None = None) -> dict:
+    """researcher 的 inbox/executor 入口（agents.yaml executor: researcher_apply）——
+    把待处理留言的内容当**选题**，跑一次真实信息搜集（联网搜索 + DeepSeek 提取 + 红线
+    去伪），信息包落盘到 content_pipeline_runs/。留言内容为空/执行失败返回 *_error，
+    留言保持 pending 不自动标记 done（让人工看过后决定是否重跑）。
+    """
+    topics = [(m.get("message") or "").strip() for m in (messages or [])
+              if (m.get("message") or "").strip()]
+    if not topics:
+        return {"researcher_error": "没有可用的选题：留言内容为空"}
+    ok: dict = {}
+    errors: list[str] = []
+    for topic in topics[:3]:  # 一次最多处理 3 条选题，防误留一堆留言把额度打光
+        try:
+            package = content_pipeline.run_research(topic, api_key=api_key)
+            artifact = content_pipeline.persist_research(package)
+            log_execution("researcher", "inbox 触发信息搜集",
+                          f"选题={topic}，facts={len(package['facts'])}，"
+                          f"dropped={len(package['dropped'])}，产物={artifact}")
+            ok[topic[:40]] = {
+                "facts": len(package["facts"]),
+                "dropped": len(package["dropped"]),
+                "conflicts": len(package["conflict_notes"]),
+                "web_used": package["web_used"],
+                "artifact": str(artifact),
+            }
+        except Exception as exc:
+            logger.exception(f"[researcher] 选题 {topic!r} 信息搜集失败")
+            errors.append(f"选题 {topic[:30]}：{exc}")
+    out: dict = {}
+    if ok:
+        out["researcher"] = ok
+    # 任何一条失败都要让 *_error 出现在**顶层**——dispatcher 只检查顶层键来决定
+    # 是否自动标记 done；错误嵌在子 dict 里会被当成成功、误标记完成。
+    if errors:
+        out["researcher_error"] = "；".join(errors)
+    return out
+
+
+def execute_critic_review(date: str, api_key: str, messages: list | None = None) -> dict:
+    """critic 的 inbox/executor 入口（agents.yaml executor: critic_review）——把留言内容当
+    **草稿输入**：如果是存在的文件路径就读文件，否则把整条留言当正文；跑一次点评出评分卡，
+    意见单落盘到 content_pipeline_runs/。只点评不改稿。
+    """
+    inputs = [(m.get("message") or "").strip() for m in (messages or [])
+              if (m.get("message") or "").strip()]
+    if not inputs:
+        return {"critic_error": "没有可点评的草稿：留言内容为空（给文件路径或直接贴正文）"}
+    ok: dict = {}
+    errors: list[str] = []
+    for raw in inputs[:3]:
+        try:
+            path = Path(raw)
+            # 只有 .md/.txt 的现成文件才按"路径"读；其它一律当"直接贴的正文"处理，
+            # 避免评论家误把一长串正文当成不存在的路径去撞文件系统。
+            if path.exists() and path.is_file() and path.suffix.lower() in (".md", ".txt"):
+                title, draft = path.stem, path.read_text(encoding="utf-8-sig")
+            else:
+                title, draft = "留言草稿", raw
+            note = content_pipeline.run_critic(f"inbox-{date}", title, draft,
+                                               platform="toutiao", api_key=api_key)
+            artifact = content_pipeline.persist_critic(note, draft)
+            log_execution("critic", "inbox 触发点评",
+                          f"草稿={title}，verdict={note['verdict']}，scores={note['scores']}，产物={artifact}")
+            ok[title[:40]] = {
+                "verdict": note["verdict"],
+                "scores": note["scores"],
+                "must_fix_count": len(note.get("must_fix") or []),
+                "parse_error": note.get("parse_error"),
+                "artifact": str(artifact),
+            }
+        except Exception as exc:
+            logger.exception("[critic] 点评失败")
+            errors.append(f"草稿 {title[:30]}：{exc}")
+    out: dict = {}
+    if ok:
+        out["critic"] = ok
+    # 同 researcher：错误必须出现在顶层键，dispatcher 才不会误标记 done
+    if errors:
+        out["critic_error"] = "；".join(errors)
+    return out
 
 
 def generate_toutiao_article(content: str, api_key: str) -> str:
@@ -351,4 +468,8 @@ def generate_task_artifact(task: dict, api_key: str) -> str:
 EXECUTORS = {
     "toutiao_draft": execute_toutiao_draft,
     "ops_assistant_full": execute_ops_assistant_full,
+    "media_maker_pending": execute_media_maker_pending,
+    "publisher_dispatch": execute_publisher_dispatch,
+    "researcher_apply": execute_researcher_apply,
+    "critic_review": execute_critic_review,
 }

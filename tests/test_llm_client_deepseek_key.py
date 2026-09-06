@@ -15,7 +15,7 @@ import llm_client
 @pytest.fixture
 def fake_config_path(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
-    monkeypatch.setattr(llm_client, "DEEPSEEK_CONFIG_PATH", path)
+    monkeypatch.setattr(llm_client, "CONFIG_PATH", path)
     return path
 
 
@@ -57,3 +57,42 @@ def test_non_dict_json_raises_deepseek_config_error(fake_config_path):
     fake_config_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
     with pytest.raises(llm_client.DeepSeekConfigError, match="不是一个 JSON 对象"):
         llm_client.load_deepseek_api_key()
+
+
+# ---- 模块级缓存：一次加载、多处调用；文件变化自动失效重读 ----
+
+def test_cache_returns_same_object_when_file_unchanged(fake_config_path):
+    """文件没变时第二次读取必须直接命中缓存（同一份 dict 对象），不重复读盘解析。"""
+    fake_config_path.write_text(json.dumps({"DEEPSEEK_API_KEY": "k1"}), encoding="utf-8")
+    first = llm_client._load_config_cached()
+    second = llm_client._load_config_cached()
+    assert first is not None and first is second
+
+
+def test_cache_invalidated_when_file_content_changes(fake_config_path):
+    """改了文件（mtime/size 变化）后必须读到新内容——"配置热更新不用重启"不能丢。"""
+    fake_config_path.write_text(json.dumps({"DEEPSEEK_API_KEY": "k1"}), encoding="utf-8")
+    before = llm_client._load_config_cached()
+    fake_config_path.write_text(json.dumps({"DEEPSEEK_API_KEY": "k2-much-longer-value"}), encoding="utf-8")
+    after = llm_client._load_config_cached()
+    assert before is not after
+    assert after["DEEPSEEK_API_KEY"] == "k2-much-longer-value"
+
+
+def test_public_loader_reflects_config_edit_without_restart(fake_config_path):
+    """通过公开入口验证热更新：第一次拿旧 key，改文件后再拿就是新 key。"""
+    fake_config_path.write_text(json.dumps({"DEEPSEEK_API_KEY": "old-key"}), encoding="utf-8")
+    assert llm_client.load_deepseek_api_key() == "old-key"
+    fake_config_path.write_text(json.dumps({"DEEPSEEK_API_KEY": "new-key-here"}), encoding="utf-8")
+    assert llm_client.load_deepseek_api_key() == "new-key-here"
+
+
+def test_missing_file_clears_cache_with_clear_issue(fake_config_path):
+    fake_config_path.write_text(json.dumps({"DEEPSEEK_API_KEY": "k1"}), encoding="utf-8")
+    assert llm_client._load_config_cached() is not None
+    fake_config_path.unlink()
+    assert llm_client._load_config_cached() is None
+    assert llm_client._config_read_issue.startswith("找不到")
+    # 文件恢复后能重新读到
+    fake_config_path.write_text(json.dumps({"DEEPSEEK_API_KEY": "k2-again"}), encoding="utf-8")
+    assert llm_client._load_config_cached()["DEEPSEEK_API_KEY"] == "k2-again"

@@ -15,18 +15,37 @@ import os
 from pathlib import Path
 
 SUPER_BRAIN = Path(os.environ.get("SUPER_BRAIN_DIR", r"G:\code\super_brain"))
+
+# config.json 的唯一权威路径（2026-09 收敛）——**全仓库只有一个名字：CONFIG_PATH**。
+# 历史上同名出现过 DEEPSEEK_CONFIG_PATH（Python 符号 + 环境变量两个形态），已全部删除：
+# 同一路径只允许一个名字，避免"名字不同、改一处漏一处"的维护成本。
+# 运行时只支持一个环境变量覆盖（本机调试指向别的配置文件时用）：SUPER_BRAIN_CONFIG_PATH。
+# 这个文件承载全部配置（DeepSeek/微信/Tavily/DashScope 凭据 + 各种目录字段），不专属
+# DeepSeek，所以不带 "DEEPSEEK" 前缀。
+CONFIG_PATH = Path(
+    os.environ.get("SUPER_BRAIN_CONFIG_PATH")
+    or str(SUPER_BRAIN / "config.json")
+)
+
 INBOX = SUPER_BRAIN / "inbox.md"
 AGENTS_DIR = SUPER_BRAIN / "agents"
 AGENTS_CONFIG_PATH = SUPER_BRAIN / "agents.yaml"
 DISPATCH_LOG_DIR = SUPER_BRAIN / "dispatch_log"
 OPC_ROOT = Path(os.environ.get("OPC_ROOT_DIR", r"G:\code"))
 
-# 2026-09-04 以前，本机默认复用 toutiao-agent 项目已经配好的 DeepSeek Key，避免重复
-# 要用户再配一份——但这导致本机和服务器实际读的不是同一份文件：服务器上 Docker 会把
-# DEEPSEEK_CONFIG_PATH 显式覆盖成 super_brain 自己的 config.json，本机却默认指向另一个
-# 兄弟项目的文件，config_check.py 这类"校验 super_brain/config.json 是否健全"的工具在
-# 本机测的其实是不会被真正用到的文件，容易产生"检查过了但其实没测对文件"的假安全感。
-# 圆桌讨论是 super_brain 的核心功能，理应把这份凭据当成 super_brain 自己的配置管，不是
-# 靠隐式复用别的项目——默认值改成 super_brain 自己的 config.json（SUPER_BRAIN / "config.json"，
-# 跟 ui_app.py/rag.py/config_check.py 用的是同一份文件），环境变量仍然可以覆盖。
-DEEPSEEK_CONFIG_PATH = Path(os.environ.get("DEEPSEEK_CONFIG_PATH", str(SUPER_BRAIN / "config.json")))
+# 自动化媒体发布流水线（autopublish.py）的三个运行目录——跟 dispatch_log 一样都是运行时
+# 产物/输入，不属于版本控制（见 .gitignore）。按"同一个仓库里只有一份权威定义"的原则集中
+# 放这里，autopublish.py 直接 import，不要自己再拼一遍路径。
+AUTOPUBLISH_QUEUE_DIR = SUPER_BRAIN / "autopublish_queue"      # 发布单（持久化状态）
+AUTOPUBLISH_ARTIFACTS_DIR = SUPER_BRAIN / "autopublish_artifacts"  # 物料（定稿/清单）
+AUTOPUBLISH_SOURCES_DIR = SUPER_BRAIN / "autopublish_sources"  # 素材入池目录（内容源适配器）
+
+# 内容工作流（workflow.py）的运行实例目录——每个"定时→agent1→审批→…"的运行留痕。
+WORKFLOW_RUNS_DIR = SUPER_BRAIN / "workflow_runs"
+
+# 历史：本机曾默认复用兄弟项目 toutiao-agent 的 config.json，导致"检查的/读的"不是同一份
+# 文件（2026-09-04 事故）。现在路径层面只有 CONFIG_PATH 一个定义（上面），不再讨论环境变量。
+
+# 读写 config.json 的唯一实现入口在 config_store.py；路径层面的唯一权威定义就是上面的
+# CONFIG_PATH。谁要"读配置/改配置"都走 config_store，不要自己 json.loads / write_text。
+

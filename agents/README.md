@@ -61,6 +61,14 @@ knowledge_path），`dispatcher.py` 才会认。新建一个角色，两步都�
 - `ops-assistant`（专精执行型，读取当天 `opc_{日期}.md` + `writer` 产出的会议纪要目录，
   分发到头条+公众号生成待审阅草稿，默认两个平台都发；不自动群发/发布，不做内容策略
   判断——那是 `marketing` 的事）
+- 自动化媒体发布流水线（2026-09 新增，agent4 发布侧，实现见 `autopublish.py`）：
+  `publish-planner`（排期路由）/ `media-maker`（物料制作，executor）/ `gatekeeper`（放行
+  闸门）/ `publisher`（发布执行，executor）——发布单三重闸门（主开关+渠道 mode+CEO 放行）。
+- 内容产出流水线（2026-09 新增，agent1/agent3，实现见 `content_pipeline.py`）：
+  `researcher`（信息搜集，信息包+红线去伪）/ `critic`（评分卡点评，只评不改）——两者都注册了
+  executor（`researcher_apply`/`critic_review`），可从管理后台"自动化通道"单条触发（To:
+  researcher 留言=选题；To: critic 留言=草稿路径/正文），也会被 content_pipeline 编排调用；
+  agent2 复用 `writer` + `content-strategist`。完整设计见根目录 `content_pipeline_plan.md`。
 
 A 类四个专家 2026-08-14 起草，均为暂定版本，待验证效果后迭代。B 类（学习方法论/教练）
 还没建，等用户明确要求再建，不预先臆造。

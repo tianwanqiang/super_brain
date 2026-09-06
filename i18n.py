@@ -21,6 +21,12 @@ AGENT_LABELS_ZH = {
     "synthesis": "决策收敛",
     "aigc-trends": "AIGC趋势专家",
     "commercialization": "商业化顾问",
+    "publish-planner": "发布排期策划",
+    "media-maker": "物料制作",
+    "gatekeeper": "发布质检闸门",
+    "publisher": "发布执行",
+    "researcher": "情报搜集（agent1）",
+    "critic": "内容点评（agent3）",
 }
 
 _CATALOG = {

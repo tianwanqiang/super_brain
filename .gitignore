@@ -56,3 +56,20 @@ agents/*/rag_index.npy
 
 # RAG 真实检索历史——个人使用数据，不是代码，供分析看板用
 agents/*/rag_retrieval_log.jsonl
+
+# 自动化媒体发布流水线（autopublish.py）的运行时数据——发布单/物料/素材入池目录
+# 都是个人数据不是代码（跟 dispatch_log/、draft_log/ 同一类）
+autopublish_queue/
+autopublish_artifacts/
+autopublish_sources/
+# 内容产出流水线（content_pipeline.py）的每次运行记录——含真实生成内容与评分，个人数据
+content_pipeline_runs/
+# 内容工作流（workflow.py）的分步运行实例——含审批记录与各步产物，个人数据
+workflow_runs/
+# 自动生成的公众号封面（static/covers/ 下运行时产物）；保留一份默认封面随仓库发布
+static/covers/*
+!static/covers/default_cover.png
+
+# �����Ҫ/���ۼ�¼���������ݣ��� conversations/ ͬ�࣬�����汾���ƣ�
+meeting/
+

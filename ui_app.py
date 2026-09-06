@@ -32,11 +32,15 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
 
 import agent_registry
+import autopublish
+import config_check
+import config_store
 import digest
 import dispatcher
 import executors
 import i18n
 import llm_client
+import mailer
 import private_chat
 import publishers
 import rag
@@ -44,6 +48,7 @@ import review
 import roundtable
 import tasks
 import video_prompt
+import workflow as workflow_engine
 from log_setup import LOG_FILE, configure_logging
 from paths import AGENTS_DIR, SUPER_BRAIN
 
@@ -190,7 +195,7 @@ def _pop_draft_error() -> str | None:
 
 INBOX = SUPER_BRAIN / "inbox.md"
 DISPATCHER_SCRIPT = SUPER_BRAIN / "dispatcher.py"
-CONFIG_PATH = SUPER_BRAIN / "config.json"
+CONFIG_PATH = config_store.CONFIG_PATH  # 统一权威常量（paths.CONFIG_PATH），不再本模块自拼
 DRAFT_LOG_DIR = SUPER_BRAIN / "draft_log"
 
 
@@ -212,11 +217,11 @@ def categorize_agents(registry: dict[str, dict]) -> tuple[list, list, list]:
 
 
 def load_config_safe() -> dict:
-    if not CONFIG_PATH.exists():
-        return {}
+    """读 config.json（走 config_store 统一实现，缓存读）；任何读取问题都当"没配置"处理
+    返回 {}，并打一条日志说明原因（不吞静默）。"""
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as exc:
+        return config_store.read_config_cached(path=CONFIG_PATH)
+    except config_store.ConfigReadError as exc:
         logger.warning(f"UI：读取 config.json 失败，当作空配置处理：{exc}")
         return {}
 
@@ -248,21 +253,16 @@ def _load_config_for_update() -> tuple[dict | None, str | None]:
     if not CONFIG_PATH.exists():
         return {}, None
     try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")), None
-    except (json.JSONDecodeError, OSError) as exc:
+        return config_store.read_config(path=CONFIG_PATH), None
+    except config_store.ConfigReadError as exc:
         return None, str(exc)
 
 
 def _write_config_with_backup(config: dict) -> None:
     """写 config.json 前先把当前文件备份成 config.json.bak（只保留最近一份，不是历史
     版本链）——防止这次写入内容本身有问题、或者以后又出现类似覆盖丢失的 bug 时还有得救。
-    """
-    if CONFIG_PATH.exists():
-        try:
-            CONFIG_PATH.replace(CONFIG_PATH.parent / (CONFIG_PATH.name + ".bak"))
-        except OSError:
-            logger.warning("UI：备份 config.json 失败，继续写入（不阻塞正常保存流程）")
-    CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+    实现委托 config_store（统一读写实现的唯一入口）。"""
+    config_store.write_config_with_backup(config, path=CONFIG_PATH)
 
 
 def parse_all_messages_for_display() -> list[dict]:
@@ -1380,6 +1380,7 @@ def draft_preview():
     meeting_minutes_dir = get_meeting_minutes_dir()
     if meeting_minutes_dir is not None:
         allowed_roots.append(meeting_minutes_dir.resolve())
+    allowed_roots.append(autopublish.ARTIFACTS_DIR.resolve())  # 自动化发布流水线的本地定稿/清单
     if not any(target == root or root in target.parents for root in allowed_roots):
         logger.warning(f"UI：草稿预览请求被拒绝——路径不在允许的目录内：{raw_path!r}")
         return "只能预览头条/公众号草稿、当前配置的会议纪要目录内的文件", 403
@@ -1396,6 +1397,592 @@ def draft_preview():
     return render_template("draft_preview.html", path=str(target), content=content)
 
 
+# ==================== 自动化媒体发布流水线（/admin/autopublish） ====================
+# 页面 + 路由 + 调度线程都在这一个区块。调度逻辑本身在 autopublish.py，这里只负责
+# "Flask 怎么把后台页面和按钮接到 autopublish.py 的函数上"，不重复实现业务判断。
+# 防重入锁：调度 tick 和"立即执行"按钮共用同一把锁，避免两个动作同时写发布单。
+_autopublish_lock = threading.Lock()
+
+
+def _autopublish_scheduler_loop() -> None:
+    while True:
+        time.sleep(60)
+        try:
+            if _autopublish_lock.acquire(blocking=False):
+                try:
+                    autopublish.scheduler_tick()
+                finally:
+                    _autopublish_lock.release()
+        except Exception:
+            logger.exception("自动化发布调度 tick 异常（已捕获，不影响下一分钟）")
+
+
+def _order_view(order: dict) -> dict:
+    return {
+        "order": order,
+        "summary": autopublish.order_summary(order),
+        "json": json.dumps(order, ensure_ascii=False, indent=2),
+    }
+
+
+@app.route("/admin/autopublish")
+def autopublish_page():
+    cfg = autopublish.load_autopublish_config()
+    view_orders = [_order_view(o) for o in autopublish.load_all_orders()]
+    return render_template(
+        "autopublish.html",
+        cfg=cfg,
+        action_labels=autopublish.ACTION_LABELS,
+        channels_meta=autopublish.CHANNELS,
+        channel_conf=cfg.get("channels", {}),
+        view_orders=view_orders,
+        master_enabled=bool(cfg.get("master_enabled")),
+        sources_dir=str(autopublish.SOURCES_DIR),
+        queue_dir=str(autopublish.QUEUE_DIR),
+        artifacts_dir=str(autopublish.ARTIFACTS_DIR),
+        msg=session.pop("autopublish_msg", None),
+        error=session.pop("autopublish_error", None),
+    )
+
+
+@app.route("/admin/autopublish/save", methods=["POST"])
+def autopublish_save_config():
+    """保存主开关 + 调度事件（时间/启用）+ 各渠道 mode。只改 config.json 的 AUTOPUBLISH
+    键，其它字段原样保留（复用 _write_config_with_backup 的备份语义）。"""
+    cfg = autopublish.load_autopublish_config()
+    cfg["master_enabled"] = bool(request.form.get("master_enabled"))
+    new_events = []
+    for ev in cfg.get("events", []):
+        eid = ev.get("id")
+        raw_time = (request.form.get(f"event_{eid}_time") or "").strip()
+        if not re.fullmatch(r"\d{1,2}:\d{2}", raw_time):
+            session["autopublish_error"] = f"事件 {eid} 的时间格式不对：{raw_time!r}（要 HH:MM）"
+            return redirect(url_for("autopublish_page"))
+        action = ev.get("action")
+        new_events.append({
+            "id": eid,
+            "label": ev.get("label") or autopublish.ACTION_LABELS.get(action, action),
+            "time": raw_time,
+            "action": action,
+            "enabled": bool(request.form.get(f"event_{eid}_enabled")),
+        })
+    cfg["events"] = new_events
+    for ch in autopublish.DEFAULT_CHANNEL_CONF:
+        mode = (request.form.get(f"ch_{ch}_mode") or "manual").strip()
+        if mode not in ("manual", "mock", "api"):
+            mode = "manual"
+        cfg["channels"].setdefault(ch, {})["mode"] = mode
+    full = autopublish.load_full_config()
+    full[autopublish.CONFIG_KEY] = cfg
+    _write_config_with_backup(full)  # 备份 + 写回，不动 config.json 其它字段
+    logger.info(f"UI：AUTOPUBLISH 配置已保存（master={cfg['master_enabled']}）")
+    session["autopublish_msg"] = "调度与渠道配置已保存。"
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/run", methods=["POST"])
+def autopublish_run_now():
+    """立即执行某个动作（对应调度事件的同款函数）——测试用，不用等真的到点。"""
+    action = (request.form.get("action") or "").strip()
+    if action not in autopublish.ACTION_LABELS:
+        session["autopublish_error"] = f"未知动作：{action!r}"
+        return redirect(url_for("autopublish_page"))
+    if not _autopublish_lock.acquire(blocking=False):
+        session["autopublish_error"] = "已有调度/按钮动作正在执行，请稍等再试。"
+        return redirect(url_for("autopublish_page"))
+    try:
+        result = autopublish.run_action_once(action)
+    except Exception as exc:
+        logger.exception(f"UI：立即执行 {action} 失败")
+        session["autopublish_error"] = f"执行 {action} 失败：{exc}"
+    else:
+        summary = json.dumps(result, ensure_ascii=False)
+        session["autopublish_msg"] = f"「{autopublish.ACTION_LABELS[action]}」执行完成：{summary[:500]}"
+    finally:
+        _autopublish_lock.release()
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/order/new", methods=["POST"])
+def autopublish_order_new():
+    title = (request.form.get("title") or "").strip()
+    text = (request.form.get("text") or "").strip()
+    publish_at = (request.form.get("publish_at") or "").strip() or None
+    if publish_at and not re.fullmatch(r"\d{1,2}:\d{2}", publish_at):
+        session["autopublish_error"] = f"计划发布时间格式不对：{publish_at!r}（要 HH:MM 或留空）"
+        return redirect(url_for("autopublish_page"))
+    if not title:
+        session["autopublish_error"] = "标题不能为空。"
+        return redirect(url_for("autopublish_page"))
+    if not text:
+        session["autopublish_error"] = "正文不能为空（骨架版发布单直接贴内容；素材自动导入以后接）。"
+        return redirect(url_for("autopublish_page"))
+    channels = [c for c in request.form.getlist("channels") if c in autopublish.CHANNELS]
+    if not channels:
+        session["autopublish_error"] = "至少勾选一个发布渠道。"
+        return redirect(url_for("autopublish_page"))
+    order = autopublish.new_order(title, {"kind": "text", "text": text[:20000]}, channels, publish_at=publish_at)
+    autopublish.save_order(order)
+    logger.info(f"UI：新建发布单 {order['id']}")
+    session["autopublish_msg"] = f"发布单已创建：{order['id']}。下一步对它执行「物料制作」。"
+    return redirect(url_for("autopublish_page"))
+
+
+def _load_order_or_error(order_id: str):
+    order = autopublish.load_order(order_id)
+    if order is None:
+        session["autopublish_error"] = f"发布单不存在：{order_id}"
+        return None
+    return order
+
+
+@app.route("/admin/autopublish/order/<order_id>/draft", methods=["POST"])
+def autopublish_order_draft(order_id):
+    if _load_order_or_error(order_id) is None:
+        return redirect(url_for("autopublish_page"))
+    try:
+        result = autopublish.run_draft_pending([order_id])
+        session["autopublish_msg"] = f"物料制作完成：produced={len(result['produced'])}，skipped={len(result['skipped'])}"
+    except Exception as exc:
+        logger.exception(f"UI：发布单 {order_id} 物料制作失败")
+        session["autopublish_error"] = f"物料制作失败：{exc}"
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/order/<order_id>/push-wechat", methods=["POST"])
+def autopublish_order_push_wechat(order_id):
+    """真实外部动作：把这份发布单推送到公众号草稿箱（不是发布）。需要 WECHAT_* 凭据。"""
+    if _load_order_or_error(order_id) is None:
+        return redirect(url_for("autopublish_page"))
+    try:
+        result = autopublish.run_draft_wechat_push(order_id)
+        session["autopublish_msg"] = f"已推送到公众号草稿箱：draft_media_id={result['draft_media_id']}"
+    except Exception as exc:
+        logger.warning(f"UI：发布单 {order_id} 推送公众号草稿失败：{exc}")
+        session["autopublish_error"] = f"推送公众号草稿失败：{exc}"
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/order/<order_id>/approve", methods=["POST"])
+def autopublish_order_approve(order_id):
+    channel = (request.form.get("channel") or "").strip()
+    if _load_order_or_error(order_id) is None:
+        return redirect(url_for("autopublish_page"))
+    try:
+        autopublish.approve_channel(order_id, channel)
+        session["autopublish_msg"] = f"已放行渠道 {channel}（gatekeeper 通过）。到点后 publisher 才会执行。"
+    except ValueError as exc:
+        session["autopublish_error"] = str(exc)
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/order/<order_id>/reject", methods=["POST"])
+def autopublish_order_reject(order_id):
+    channel = (request.form.get("channel") or "").strip()
+    reason = (request.form.get("reason") or "").strip()
+    if _load_order_or_error(order_id) is None:
+        return redirect(url_for("autopublish_page"))
+    autopublish.reject_channel(order_id, channel, reason)
+    session["autopublish_msg"] = f"渠道 {channel} 已打回。"
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/order/<order_id>/publish", methods=["POST"])
+def autopublish_order_publish(order_id):
+    """对单个发布单立即执行发布（force：忽略该单的发布时间窗口）。三重闸门仍生效：
+    全局主开关 + 渠道 mode + CEO 放行。"""
+    order = _load_order_or_error(order_id)
+    if order is None:
+        return redirect(url_for("autopublish_page"))
+    if not autopublish.master_enabled():
+        session["autopublish_error"] = "全局主开关未打开，不会执行任何真实/模拟发布。先到本页顶部打开再试。"
+        return redirect(url_for("autopublish_page"))
+    if not _autopublish_lock.acquire(blocking=False):
+        session["autopublish_error"] = "已有动作正在执行，请稍等再试。"
+        return redirect(url_for("autopublish_page"))
+    try:
+        results = autopublish.dispatch_order(order, force=True)
+        session["autopublish_msg"] = f"发布执行完成：{json.dumps(results, ensure_ascii=False)}"
+    except Exception as exc:
+        logger.exception(f"UI：发布单 {order_id} 发布执行失败")
+        session["autopublish_error"] = f"发布执行失败：{exc}"
+    finally:
+        _autopublish_lock.release()
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/order/<order_id>/cancel", methods=["POST"])
+def autopublish_order_cancel(order_id):
+    reason = (request.form.get("reason") or "").strip()
+    if _load_order_or_error(order_id) is None:
+        return redirect(url_for("autopublish_page"))
+    autopublish.cancel_order(order_id, reason)
+    session["autopublish_msg"] = "发布单已取消。"
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/order/<order_id>/delete", methods=["POST"])
+def autopublish_order_delete(order_id):
+    autopublish.delete_order(order_id)
+    session["autopublish_msg"] = "发布单已删除。"
+    return redirect(url_for("autopublish_page"))
+
+
+# ==================== 系统配置（/admin/config：网页填密钥/目录/邮件，不回显真实值） ====================
+# 设计：config.json 里的配置绝大多数都能在这里网页维护，避免"贴 JSON / 贴 key"。
+# 安全约定：已配置的值**绝不回显到页面**；输入框留空=保持原值不动；想清空某项就勾"置空"。
+CONFIG_UI_GROUPS = [
+    ("DeepSeek（模型）", [
+        ("DEEPSEEK_API_KEY", "API Key（必填，几乎全部 AI 功能依赖）", True),
+        ("Model", "模型名（留空=内置 deepseek-v4-pro）", False),
+        ("BaseUrl", "接口地址（留空=内置 https://api.deepseek.com/v1）", False),
+        ("MaxTokens", "最大 token（留空=内置 8000）", False),
+        ("ModelStructured", "结构化任务模型（可选）：选题/事实提取/评分/格式改写专用；填非推理快模型（如 deepseek-chat）更省钱更稳", False),
+    ]),
+    ("联网搜索（可选）", [
+        ("TAVILY_API_KEY", "Tavily API Key（空=自动降级，不联网）", True),
+    ]),
+    ("微信公众号（草稿/发布用则必填）", [
+        ("WECHAT_APP_ID", "AppID", True),
+        ("WECHAT_APP_KEY", "AppSecret", True),
+        ("WECHAT_DEFAULT_COVER_URL", "默认封面图 URL", False),
+    ]),
+    ("RAG 检索（DashScope + DashVector，可选）", [
+        ("DASHSCOPE_API_KEY", "DashScope API Key", True),
+        ("DASHSCOPE_WORKSPACE_ID", "DashScope WorkspaceId", True),
+        ("DASHVECTOR_API_KEY", "DashVector API Key", True),
+        ("DASHVECTOR_ENDPOINT", "DashVector Endpoint", True),
+    ]),
+    ("目录（可选，留空用默认）", [
+        ("MEETING_MINUTES_DIR", "会议纪要目录", False),
+        ("TOUTIAO_DRAFTS_DIR", "头条草稿目录", False),
+        ("WECHAT_DRAFTS_DIR", "公众号草稿预览目录", False),
+    ]),
+    ("对外访问地址（封面图/链接用，可选）", [
+        ("PUBLIC_BASE_URL", "公网可达地址，如 http://IP:5151 或 https://域名——公众号封面图与邮件链接都要用它", False),
+    ]),
+]
+
+MAIL_UI_FIELDS = [
+    ("smtp_host", "SMTP 服务器（QQ 填 smtp.qq.com）", False),
+    ("smtp_port", "端口（465=SSL / 587=STARTTLS）", False),
+    ("username", "账号（QQ 填 完整邮箱）", False),
+    ("password", "授权码/密码（QQ 用授权码，不是登录密码）", True),
+    ("from_addr", "发件地址", False),
+    ("to_addr", "收件地址（审核通知发到这里）", False),
+    ("public_base_url", "对外访问地址（收件人可访问，用于拼审核链接）", False),
+]
+
+_CONFIG_MAIL_INT_FIELDS = {"smtp_port"}
+
+
+def _config_page_view():
+    """渲染数据：当前值存在性（不回显值本身）+ config_check 体检结果。"""
+    config = load_config_safe()
+    mail = config.get("MAIL") if isinstance(config.get("MAIL"), dict) else {}
+    issues, load_error = config_check.load_and_validate()
+    return {
+        "groups": CONFIG_UI_GROUPS,
+        "has": set(config.keys()),
+        "mail_fields": MAIL_UI_FIELDS,
+        "mail_has": set(mail.keys()),
+        "issues": issues,
+        "load_error": load_error,
+        "msg": session.pop("config_page_msg", None),
+        "error": session.pop("config_page_error", None),
+    }
+
+
+@app.route("/admin/config")
+def config_page():
+    return render_template("config.html", **_config_page_view())
+
+
+@app.route("/admin/config/save", methods=["POST"])
+def config_save():
+    """保存表单里的字段。约定：留空=保持原值；勾了"置空"=删除该项；密钥不回显也不回写空串。"""
+    config, load_error = _load_config_for_update()
+    if config is None:
+        session["config_page_error"] = f"config.json 读取失败（{load_error}），拒绝写入以免覆盖已有配置。"
+        return redirect(url_for("config_page"))
+    config = config if isinstance(config, dict) else {}
+
+    changed: list[str] = []
+    try:
+        for _group, fields in CONFIG_UI_GROUPS:
+            for key, _label, _secret in fields:
+                clear = bool(request.form.get(f"{key}__clear"))
+                if clear:
+                    config.pop(key, None)
+                    changed.append(f"{key}（已置空）")
+                    continue
+                new_value = (request.form.get(key) or "").strip()
+                if new_value:
+                    if key == "MaxTokens":
+                        int(new_value)  # 校验，抛错进 except
+                    config[key] = new_value
+                    changed.append(key)
+        mail = config.get("MAIL") if isinstance(config.get("MAIL"), dict) else {}
+        mail_changed = False
+        for mf, _label, _secret in MAIL_UI_FIELDS:
+            clear = bool(request.form.get(f"MAIL__{mf}__clear"))
+            if clear:
+                mail.pop(mf, None)
+                mail_changed = True
+                changed.append(f"MAIL.{mf}（已置空）")
+                continue
+            new_value = (request.form.get(f"MAIL__{mf}") or "").strip()
+            if new_value:
+                if mf in _CONFIG_MAIL_INT_FIELDS:
+                    mail[mf] = int(new_value)
+                else:
+                    mail[mf] = new_value
+                mail_changed = True
+                changed.append(f"MAIL.{mf}")
+        if mail_changed:
+            config["MAIL"] = mail
+        _write_config_with_backup(config)
+    except ValueError as exc:
+        session["config_page_error"] = f"保存失败，格式不对：{exc}"
+        return redirect(url_for("config_page"))
+    session["config_page_msg"] = "配置已保存。" + (f" 更新：{', '.join(changed)}" if changed else "（本次没有改动）")
+    return redirect(url_for("config_page"))
+
+
+@app.route("/admin/config/test-mail", methods=["POST"])
+def config_test_mail():
+    """立即发一封测试邮件验证 MAIL 配置（不用等工作流触发）。失败原因显示在页面上。"""
+    settings = mailer.mail_settings()
+    if not settings:
+        session["config_page_error"] = "还没配置 MAIL：先在系统配置里填好邮箱并保存。"
+        return redirect(url_for("config_page"))
+    ok = mailer.send_mail(settings, "[super_brain] 测试邮件",
+                          "<p>配置成功 ✅ 这是一封来自 super_brain 的测试邮件。</p>")
+    if ok:
+        session["config_page_msg"] = "测试邮件已发送，请到收件箱确认。"
+    else:
+        session["config_page_error"] = "测试邮件发送失败：" + (mailer.last_error() or "未知错误，看日志 logs/super_brain.log")
+    return redirect(url_for("config_page"))
+
+
+# ==================== 内容工作流（P4：定时 → agent1 → 预览 → 审批 → 依次执行） ====================
+
+_workflow_lock = threading.Lock()
+
+
+def _workflow_scheduler_loop() -> None:
+    while True:
+        time.sleep(60)
+        try:
+            if _workflow_lock.acquire(blocking=False):
+                try:
+                    workflow_engine.scheduler_tick()
+                finally:
+                    _workflow_lock.release()
+        except Exception:
+            logger.exception("内容工作流调度 tick 异常（已捕获，不影响下一分钟）")
+
+
+def _workflow_step_pill(status: str) -> str:
+    css = {
+        workflow_engine.ST_PENDING: "pill-queued",
+        workflow_engine.ST_RUNNING: "pill-drafted",
+        workflow_engine.ST_AWAITING: "pill-approved",
+        workflow_engine.ST_DONE: "pill-published",
+        workflow_engine.ST_APPROVED: "pill-published",
+        workflow_engine.ST_REJECTED: "pill-cancelled",
+        workflow_engine.ST_FAILED: "pill-failed",
+        workflow_engine.ST_SKIPPED: "pill-skipped",
+    }
+    return css.get(status, "pill-queued")
+
+
+def _workflow_msg_set(message: str | None, error: str | None = None) -> None:
+    if message:
+        session["workflows_msg"] = message
+    if error:
+        session["workflows_error"] = error
+
+
+STEP_STATUS_ZH = {
+    workflow_engine.ST_PENDING: "待执行",
+    workflow_engine.ST_RUNNING: "执行中",
+    workflow_engine.ST_AWAITING: "等你审核",
+    workflow_engine.ST_DONE: "已通过",
+    workflow_engine.ST_APPROVED: "已通过",
+    workflow_engine.ST_REJECTED: "已打回",
+    workflow_engine.ST_FAILED: "失败",
+    workflow_engine.ST_SKIPPED: "跳过",
+}
+
+
+@app.route("/admin/workflows")
+def workflows_page():
+    defs = workflow_engine.load_workflows()
+    runs = []
+    for run in workflow_engine.load_all_runs():
+        steps = run.get("steps", [])
+        waiting = next((s for s in steps if s["status"] == workflow_engine.ST_AWAITING), None)
+        view_steps = []
+        for s in steps:
+            art = s.get("artifact")
+            artifact_json = json.dumps(art, ensure_ascii=False, indent=1)[:12000] if art else ""
+            payload = (art or {}).get("payload") or (art or {}).get("preview") or ""
+            empty_hint = bool(art) and art.get("kind") in ("research", "draft", "critic") \
+                         and not str(payload).strip()
+            view_steps.append({**s, "artifact_json": artifact_json, "empty_hint": empty_hint})
+        runs.append({
+            "run": run,
+            "status": workflow_engine.run_status_for_ui(run),
+            "steps": view_steps,
+            "run_id": run["run_id"],
+            "waiting": waiting,
+            "zh": STEP_STATUS_ZH,
+        })
+    highlight_run = (request.args.get("run") or "").strip()   # 邮件链接带 run=xxx 直达该单
+    return render_template(
+        "workflows.html",
+        workflows=defs,
+        runs=runs,
+        highlight_run=highlight_run,
+        default_workflow_id=workflow_engine.DEFAULT_WORKFLOW_ID,
+        msg=session.pop("workflows_msg", None),
+        error=session.pop("workflows_error", None),
+        pill=_workflow_step_pill,
+    )
+
+
+@app.route("/admin/workflows/save", methods=["POST"])
+def workflows_save():
+    """保存各工作流定义的调度时间/开关 + 每一步是否要审批（requires_approval 可配）。"""
+    workflows = workflow_engine.load_workflows()
+    for wf_id in workflows:
+        workflows[wf_id]["direction"] = (request.form.get(f"wf_{wf_id}_direction") or "").strip()
+        schedule = workflows[wf_id].setdefault("schedule", {})
+        raw_time = (request.form.get(f"wf_{wf_id}_time") or "").strip()
+        if raw_time and not re.fullmatch(r"\d{1,2}:\d{2}", raw_time):
+            _workflow_msg_set(None, f"工作流 {wf_id} 的时间格式不对：{raw_time!r}（要 HH:MM）")
+            return redirect(url_for("workflows_page"))
+        schedule["time"] = raw_time or schedule.get("time", "20:00")
+        schedule["enabled"] = bool(request.form.get(f"wf_{wf_id}_enabled"))
+        steps = workflows[wf_id].get("steps", [])
+        for i, step in enumerate(steps):
+            step["requires_approval"] = bool(request.form.get(f"wf_{wf_id}_s{i}_approval"))
+    workflow_engine.save_workflows(workflows)
+    _workflow_msg_set("工作流定义已保存（含每步审批开关）。")
+    return redirect(url_for("workflows_page"))
+
+
+def _run_with_lock(fn, ok_msg):
+    if not _workflow_lock.acquire(blocking=False):
+        _workflow_msg_set(None, "已有工作流动作在执行，请稍等再试。")
+        return
+    try:
+        fn()
+        if ok_msg:
+            _workflow_msg_set(ok_msg)
+    except Exception as exc:
+        logger.exception("工作流操作失败")
+        _workflow_msg_set(None, f"操作失败：{exc}")
+    finally:
+        _workflow_lock.release()
+
+
+@app.route("/admin/workflows/run/new", methods=["POST"])
+def workflows_run_new():
+    """手动触发一次完整工作流（真实调用 DeepSeek/Tavily）。第一步骤产出后停在审批口。"""
+    wf_id = (request.form.get("workflow_id") or "").strip()
+    topic = (request.form.get("topic") or "").strip()
+    source_text = (request.form.get("source_text") or "").strip()
+
+    def _do():
+        if wf_id not in workflow_engine.load_workflows():
+            raise ValueError(f"未知工作流：{wf_id}")
+        run = workflow_engine.create_run(wf_id, topic=topic, source_text=source_text)
+        try:
+            api_key = llm_client.load_deepseek_api_key()
+        except llm_client.DeepSeekConfigError as exc:
+            workflow_engine.save_run(run)  # 先留着空 run，方便之后补 key 重试
+            raise ValueError(f"DeepSeek 未配置：{exc}")
+        workflow_engine.advance(run["run_id"], api_key=api_key)
+        _workflow_msg_set(f"工作流已启动：{run['run_id']}。第一步已执行，去下面审批队列查看/通过。")
+
+    _run_with_lock(_do, None)
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/approve", methods=["POST"])
+def workflows_step_approve(run_id, step_index):
+    note = (request.form.get("note") or "").strip()
+    radio_topic = (request.form.get("topic") or "").strip()
+    custom_topic = (request.form.get("topic_custom") or "").strip()
+    chosen_topic = custom_topic if (radio_topic == "__custom__" or custom_topic) else radio_topic
+
+    def _do():
+        try:
+            api_key = llm_client.load_deepseek_api_key()
+        except llm_client.DeepSeekConfigError:
+            api_key = None  # 后续步骤没有需要 LLM 的就不用 key；需要时会在引擎里报错可重试
+        workflow_engine.approve_step(run_id, step_index, note=note, approved_by="CEO",
+                                     chosen_topic=chosen_topic)
+        _workflow_msg_set("审批通过，已自动推进下一步。")
+
+    _run_with_lock(_do, None)
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/reject", methods=["POST"])
+def workflows_step_reject(run_id, step_index):
+    reason = (request.form.get("reason") or "").strip()
+    _run_with_lock(lambda: workflow_engine.reject_step(run_id, step_index, reason=reason),
+                   "已打回，该 run 停止。可在该步上改参数后重试。")
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/retry", methods=["POST"])
+def workflows_step_retry(run_id, step_index):
+    def _do():
+        try:
+            api_key = llm_client.load_deepseek_api_key()
+        except llm_client.DeepSeekConfigError:
+            api_key = None
+        workflow_engine.retry_step(run_id, step_index, api_key=api_key)
+        _workflow_msg_set("已重试该步骤。")
+
+    _run_with_lock(_do, None)
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/redo", methods=["POST"])
+def workflows_step_redo(run_id, step_index):
+    """等待审批的步骤重新执行（覆盖旧产物再等审批），用于产物为空/不满意时。"""
+    def _do():
+        try:
+            api_key = llm_client.load_deepseek_api_key()
+        except llm_client.DeepSeekConfigError:
+            api_key = None
+        workflow_engine.redo_step(run_id, step_index, api_key=api_key)
+        _workflow_msg_set("已重新执行该步，等待审核。")
+
+    _run_with_lock(_do, None)
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/skip", methods=["POST"])
+def workflows_step_skip(run_id, step_index):
+    """跳过该步继续（用于某步因额度/网络反复失败等）——跳过内容步骤=人工后续补，跳过 publish=不产生发布单。"""
+    reason = (request.form.get("reason") or "").strip()
+    _run_with_lock(lambda: workflow_engine.skip_step(run_id, step_index, reason=reason),
+                   "已跳过该步，尝试继续推进。")
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/stop", methods=["POST"])
+def workflows_run_stop(run_id):
+    _run_with_lock(lambda: workflow_engine.stop_run(run_id, reason="CEO 手动停止"), "已停止该 run。")
+    return redirect(url_for("workflows_page"))
+
+
 # pytest 会自动设置 PYTEST_CURRENT_TEST 这个环境变量——测试文件 import ui_app 时必须
 # 跳过这一步，否则会启动一个真实的后台线程，一旦测试恰好在过了本机 18 点之后运行，
 # 会触发真实的、要花钱的 DeepSeek 批量调用，不是测试应该产生的副作用。正常运行（gunicorn/
@@ -1403,6 +1990,10 @@ def draft_preview():
 if not os.environ.get("PYTEST_CURRENT_TEST"):
     threading.Thread(target=_daily_batch_scheduler_loop, daemon=True).start()
     logger.info("每日 18 点批量汇总的调度线程已启动（每分钟检查一次）")
+    threading.Thread(target=_autopublish_scheduler_loop, daemon=True).start()
+    logger.info("自动化媒体发布调度线程已启动（每分钟检查一次，事件默认全部关闭）")
+    threading.Thread(target=_workflow_scheduler_loop, daemon=True).start()
+    logger.info("内容工作流调度线程已启动（每分钟检查一次，工作流默认全部关闭）")
 
 if __name__ == "__main__":
     # 本机开发默认只监听 127.0.0.1（不对局域网/公网开放）；容器部署时 Dockerfile 会把

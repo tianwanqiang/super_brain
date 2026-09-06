@@ -24,11 +24,12 @@ import logging
 import re
 import sys
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
-from agent_registry import load_agent_registry, load_private_context, log_execution
-from functools import partial
+import config_store
 import rag
+from agent_registry import load_agent_registry, load_private_context, log_execution
 from llm_client import (
     DeepSeekConfigError,
     call_deepseek,
@@ -39,12 +40,11 @@ from llm_client import (
     load_tavily_api_key,
 )
 from log_setup import configure_logging
-from paths import AGENTS_DIR, SUPER_BRAIN
+from paths import AGENTS_DIR, CONFIG_PATH, SUPER_BRAIN
 from tasks import add_tasks_from_decision
 
 logger = logging.getLogger("super_brain.roundtable")
 
-CONFIG_PATH = SUPER_BRAIN / "config.json"
 ROUNDTABLE_LOG_DIR = SUPER_BRAIN / "roundtable_log"  # 老的扁平存储，只用于一次性迁移
 CONVERSATIONS_DIR = SUPER_BRAIN / "conversations"
 
@@ -267,10 +267,10 @@ def write_meeting_minutes(question: str, agent_names: list[str],
     """调 writer 的知识框架，把两轮原始记录写成正式会议纪要，落盘到持久化配置的目录。
     目录没配置就跳过落盘（不臆造路径），只把原始记录返回，不算失败。
     """
-    if not CONFIG_PATH.exists():
+    config = config_store.read_config_soft(path=CONFIG_PATH, cached=True)
+    if not config:
         logger.warning("没有 config.json，跳过写会议纪要（MEETING_MINUTES_DIR 未配置）")
         return None
-    config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
     minutes_dir = config.get("MEETING_MINUTES_DIR")
     if not minutes_dir:
         logger.warning("config.json 里没有 MEETING_MINUTES_DIR，跳过写会议纪要——去 UI 的"

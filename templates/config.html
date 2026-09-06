@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>系统配置 · super_brain</title>
+<style>
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 900px; margin: 30px auto; padding: 0 20px; color: #1b2028; background: #f5f6f8; }
+  h1 { font-size: 22px; }
+  h1 a { font-size: 13px; color: #666; text-decoration: none; margin-left: 14px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 30px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5e5; vertical-align: middle; }
+  th { background: #eef0f3; font-weight: 600; width: 34%; }
+  input[type=text], input[type=password], input[type=number] { width: 100%; padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13.5px; font-family: inherit; box-sizing: border-box; }
+  button { padding: 7px 18px; border: none; border-radius: 4px; background: #0e6e76; color: #fff; font-size: 13.5px; cursor: pointer; margin: 10px 0; }
+  .banner { padding: 10px 14px; border-radius: 6px; margin: 12px 0; font-size: 13.5px; }
+  .banner-ok { background: #dcefe0; border: 1px solid #1e7a3c; color: #1e5c2f; }
+  .banner-err { background: #fbe3e0; border: 1px solid #b3402f; color: #8a2e20; }
+  .muted { color: #888; font-size: 12.5px; }
+  .tag { display:inline-block; padding:1px 7px; border-radius:9px; font-size:11px; margin-left:6px; }
+  .tag-on { background:#dcefe0; color:#1e7a3c; }
+  .tag-off { background:#eee; color:#777; }
+  .tag-clear { background:#fdecd2; color:#a35b00; }
+  .chk { width:auto; margin-right:4px; }
+  .card { background:#fff; border:1px solid #e2e4e8; border-radius:6px; padding:6px 12px; margin-bottom:18px; }
+</style>
+</head>
+<body>
+
+<h1>系统配置<a href="{{ url_for('admin') }}">← 运维总览</a></h1>
+<p class="muted">
+  在这里维护 config.json 的密钥/目录/邮件等配置，不用碰文件、不用在对话里贴 key。
+  <strong>安全约定：已配置的值不回显；输入框留空 = 保持原值不变；想清空某项就勾"置空"后保存。</strong>
+</p>
+
+{% if msg %}<div class="banner banner-ok">{{ msg }}</div>{% endif %}
+{% if error %}<div class="banner banner-err">{{ error }}</div>{% endif %}
+
+{% if load_error %}
+<div class="banner banner-err">config.json 读取有问题（config_check）：{{ load_error }}——请先在服务器上手动修复文件。</div>
+{% else %}
+<div class="banner banner-ok" style="background:#f0f4f1;border-color:#9cc6a8;">
+  config_check 体检：{% if issues %}
+    {% for it in issues %}[{{ 'FAIL' if it.severity == 'error' else 'WARN' }}] 缺 {{ it.field }}：{{ it.reason }}；{% endfor %}
+  {% else %}全部必需字段齐全 ✅{% endif %}
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('config_save') }}">
+
+  {% for group_name, fields in groups %}
+  <h2>{{ group_name }}</h2>
+  <div class="card"><table>
+    {% for key, label, secret in fields %}
+    <tr>
+      <th>{{ label }}<br><code class="muted" style="font-size:11px;">{{ key }}</code>
+        {% if key in has %}<span class="tag tag-on">已配置</span>{% else %}<span class="tag tag-off">未配置</span>{% endif %}
+      </th>
+      <td>
+        <input type="{{ 'password' if secret else 'text' }}" name="{{ key }}" autocomplete="off"
+               placeholder="{% if key in has %}已配置——想改就填新值，留空则保持原值{% else %}留空表示不设置{% endif %}">
+        {% if key in has %}
+        <label style="display:block; margin-top:4px;"><input type="checkbox" class="chk" name="{{ key }}__clear" value="1"> 置空（删除该配置）</label>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+  {% endfor %}
+
+  <h2>审核通知邮件（MAIL，可选——工作流进审批口时自动发链接）</h2>
+  <div class="card"><table>
+    {% for mf, label, secret in mail_fields %}
+    <tr>
+      <th>{{ label }}<br><code class="muted" style="font-size:11px;">MAIL.{{ mf }}</code>
+        {% if mf in mail_has %}<span class="tag tag-on">已配置</span>{% else %}<span class="tag tag-off">未配置</span>{% endif %}
+      </th>
+      <td>
+        <input type="{{ 'password' if secret else ('number' if mf == 'smtp_port' else 'text') }}"
+               name="MAIL__{{ mf }}" autocomplete="off"
+               placeholder="{% if mf in mail_has %}已配置——想改就填新值，留空则保持原值{% else %}留空表示不设置{% endif %}">
+        {% if mf in mail_has %}
+        <label style="display:block; margin-top:4px;"><input type="checkbox" class="chk" name="MAIL__{{ mf }}__clear" value="1"> 置空（删除该项）</label>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table></div>
+
+  <button type="submit">保存配置</button>
+  <button type="submit" form="test-mail-form" style="background:#6b6357;">发送测试邮件（验证 MAIL 配置）</button>
+</form>
+
+<form id="test-mail-form" method="post" action="{{ url_for('config_test_mail') }}" style="display:none;"></form>
+
+<p class="muted">说明：AUTOPUBLISH / CONTENT_WORKFLOWS 等结构配置在各自的后台页维护（发布后台 / 内容工作流）；填完可在本页顶部看到 config_check 体检结果。</p>
+
+</body>
+</html>

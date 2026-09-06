@@ -137,3 +137,57 @@ agents:
     description: 读取当天的 opc 内容 + 会议纪要目录里的新文件，分发到头条和公众号生成待审阅草稿；默认两个平台都发，不自动发布/群发
     knowledge_path: agents/ops-assistant/private.md
     executor: ops_assistant_full
+
+# ---- 自动化媒体发布流水线角色（2026-09 新增，autopublish.py 骨架）----
+# 这四个角色属于"发布侧"流水线：素材入池(collect) -> 物料制作(draft) -> 人工放行(approve)
+# -> 定时发布(dispatch)。跟上面老角色的分工差异：ops-assistant 是把"当天沉淀内容"一次性
+# 分发成待审阅草稿的旧路径；这里是对"发布单"做有状态、带调度、可重试的流水线。流水线的
+# 每个环节在 autopublish.py 里是确定性的 Python 函数 + 人工闸门，不套 inbox 协议。
+# 设计说明：
+#   - publish-planner / gatekeeper 没有 executor：planner 目前只有默认路由（建单时选好的
+#     渠道），gatekeeper 的"放行/打回"是后台的人工按钮，两者不需要被 inbox/dispatcher 触发。
+#   - media-maker / publisher 有 executor（对应 executors.py 里两个真实函数），inbox 留言
+#     可以触发它们处理当天待生产/待发布的发布单——这是跟 ops-assistant 同款的自动化通道。
+
+  - name: publish-planner
+    type: execution
+    description: 发布流水线排期与路由——素材入池时决定发哪些渠道/什么档期，产出发布单；目前是默认路由（人工建单时定渠道），以后接素材自动决策
+    knowledge_path: agents/publish-planner/private.md
+
+  - name: media-maker
+    type: execution
+    description: 为发布单制作可发布物料——文章本地定稿（零成本）/推送公众号草稿/视频生成 provider 调度；只生产，不发布
+    knowledge_path: agents/media-maker/private.md
+    executor: media_maker_pending
+
+  - name: gatekeeper
+    type: execution
+    description: 发布前质检与放行闸门——审核物料，可打回；真正"批准发布"永远由 CEO 在后台逐渠道人工确认
+    knowledge_path: agents/gatekeeper/private.md
+
+  - name: publisher
+    type: execution
+    description: 按发布单把已放行且到点的内容发布到各平台——受全局主开关+渠道 mode+CEO 放行三重闸门约束；没有自动发布能力的渠道如实标记 needs_manual
+    knowledge_path: agents/publisher/private.md
+    executor: publisher_dispatch
+
+# ---- 内容产出流水线角色（agent1/agent3，2026-09 新增，content_pipeline.py）----
+# 跟"发布侧"那四个角色互补：这里补的是内容生产侧。agent2（writer）直接复用上面已注册的
+# writer/content-strategist，不重复注册。
+# 设计说明（2026-09 修订）：researcher/critic 的推理引擎在 content_pipeline.py（流水线编排
+# 内直接调用），同时给它们注册了 executor——inbox 留言（To: researcher / critic）可以从管理
+# 后台"自动化通道"触发单次真实执行：researcher 把留言内容当选题跑一次信息搜集，critic 把
+# 留言里的草稿路径/正文当输入跑一次点评。两条入口并存：自动化通道适合"把单条任务丢给
+# agent"；content_pipeline 编排适合"整条流水线一起跑"。
+
+  - name: researcher
+    type: execution
+    description: 内容流水线 agent1——选题→联网搜索(RAG 降级)→产出逐条带来源的信息包(Fact Package)；代码层红线：无来源事实直接丢弃
+    knowledge_path: agents/researcher/private.md
+    executor: researcher_apply
+
+  - name: critic
+    type: execution
+    description: 内容流水线 agent3——对 writer 定稿出量化评分卡意见单(钩子/密度/事实风险/平台适配)，只点评不改稿；verdict=accept/revise/reject
+    knowledge_path: agents/critic/private.md
+    executor: critic_review

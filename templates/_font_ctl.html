@@ -1,0 +1,32 @@
+{# 公共：日志/代码字号调节（A−/A+）。用 CSS 变量 + !important 真正改样式，偏好存 localStorage。 #}
+<div id="font-ctl" style="position:sticky;top:6px;float:right;font-size:12px;background:#fff;border:1px solid #ccc;border-radius:4px;padding:3px 8px;display:inline-flex;gap:6px;align-items:center;z-index:50;">
+  字体
+  <button type="button" id="font-minus" style="padding:2px 9px;">A−</button>
+  <span id="font-pct" style="min-width:42px;text-align:center;">100%</span>
+  <button type="button" id="font-plus" style="padding:2px 9px;">A+</button>
+</div>
+<style id="font-scale-style">
+  pre, pre code, textarea.code, .recent-log, code, .log, .muted { font-size: calc(13px * var(--sb-font-scale, 1)) !important; }
+  button, input, select, td, th, .card, .banner, .pill { font-size: calc(13px * var(--sb-font-scale, 1)) !important; }
+</style>
+<script>
+(function () {
+  var KEY = 'sb_font_scale';
+  function clamp(v) { return Math.min(1.8, Math.max(0.7, v)); }
+  var scale = parseFloat(localStorage.getItem(KEY) || '1');
+  if (!(scale > 0)) { scale = 1; }
+  function apply() {
+    document.documentElement.style.setProperty('--sb-font-scale', String(scale));
+    var pct = document.getElementById('font-pct');
+    if (pct) { pct.textContent = Math.round(scale * 100) + '%'; }
+  }
+  function update(delta) { scale = clamp(scale + delta * 0.1); localStorage.setItem(KEY, String(scale)); apply(); }
+  document.addEventListener('DOMContentLoaded', function () {
+    apply();
+    var plus = document.getElementById('font-plus');
+    var minus = document.getElementById('font-minus');
+    if (plus) { plus.addEventListener('click', function () { update(1); }); }
+    if (minus) { minus.addEventListener('click', function () { update(-1); }); }
+  });
+})();
+</script>

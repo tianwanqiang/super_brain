@@ -34,11 +34,17 @@ Claude Code 的记忆系统（`.claude\projects\<项目>\memory\`）是**按项�
 - `inbox.md`——跨 agent/跨 session 的**异步**留言板（不是实时聊天），格式和使用规则写在文件里。
 - `agents\<角色名>\private.md`——每个 agent 角色的独享上下文，默认不被其他 agent 读取；跟根目录这些共享偏好文件的区别是"谁该看"：共享文件是所有 agent 都该知道的提炼知识，私有文件只服务某一个角色自己的具体任务。
 
-**当前已有的角色**（名字都是按功能定的，随时可改）：
+**当前已有的角色**（名字都是按功能定的，随时可改；完整注册表看 `agents.yaml`）：
 
 | 角色 | 类型 | 对应什么 |
 |---|---|---|
 | `ship` | 专精执行型 | `ship` skill 本身（推代码 + 建公众号草稿） |
 | `coordinator` | 协调型 | 用户主力沟通的这条对话线，负责架构设计、任务拆解、调度专精 agent |
+| `writer` | 专精执行型 | 会议纪要撰写 / 运营向成稿（agent2，被 content_pipeline 复用） |
+| `researcher` | 专精执行型 | 内容流水线 agent1：信息搜集 → 带来源的信息包 |
+| `critic` | 专精执行型 | 内容流水线 agent3：评分卡点评（只评不改） |
+| `publish-planner` / `media-maker` / `gatekeeper` / `publisher` | 专精执行型 | 发布侧（agent4）：排期/物料/放行/执行 |
+
+内容产出与自动化发布的完整方案见 `content_pipeline_plan.md`。
 
 `inbox.md` 里已经有一条 coordinator → ship 的真实留言作为使用示例（告知 ship 它自己的 private.md 已经建好，里面有凭据存放方式和默认封面图这两条专属上下文）。

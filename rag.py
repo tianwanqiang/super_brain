@@ -30,11 +30,10 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from paths import AGENTS_DIR, SUPER_BRAIN
+import config_store
+from paths import AGENTS_DIR, CONFIG_PATH
 
 logger = logging.getLogger("super_brain.rag")
-
-CONFIG_PATH = SUPER_BRAIN / "config.json"
 
 EMBEDDING_MODEL = "text-embedding-v3"
 EMBEDDING_DIMENSION = 1024
@@ -48,12 +47,9 @@ class RagConfigError(Exception):
 
 
 def _load_config() -> dict:
-    if not CONFIG_PATH.exists():
-        return {}
-    try:
-        return json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    """读 config.json（走 config_store 统一实现）；文件不存在/损坏返回 {}（RAG 凭据缺失
+    会在 _dashscope_config/_dashvector_config 里按字段明确报错，这里不吞细节）。"""
+    return config_store.read_config_soft(path=CONFIG_PATH, cached=True)
 
 
 def _dashscope_config() -> tuple[str, str]:

@@ -5,6 +5,7 @@ super_brain agent_registry - "有哪些合法 agent、各自的知识框架是�
 目录 agents/<name>/ 存在不代表已注册），跟 inbox 调度、DeepSeek 调用是两个不同的关注点。
 """
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +14,13 @@ import yaml
 from paths import AGENTS_CONFIG_PATH, AGENTS_DIR, SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.agent_registry")
+
+
+def _running_under_pytest() -> bool:
+    """pytest 运行时禁止把执行记录写进生产 lessons.md——否则测试调真实执行函数时会把
+    pytest 临时路径/fake 数据混进复盘记录（ops-assistant/lessons.md 曾被污染成 37KB）。
+    跟 ui_app.py 用 PYTEST_CURRENT_TEST 保护调度线程是同一个思路。"""
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 
 def load_agent_registry() -> dict[str, dict]:
@@ -65,6 +73,8 @@ def log_execution(agent_name: str, action: str, detail: str, status: str = "ok")
     没有"判断依据"可反思，硬要生成反思文字只是在浪费一次调用换一段正确的废话。真正有用
     的是留下事实记录，供机制 2（定期复盘）以后用规则或者 LLM 去归纳"这类任务经常在哪失败"。
     """
+    if _running_under_pytest():
+        return
     lessons_path = AGENTS_DIR / agent_name / "lessons.md"
     lessons_path.parent.mkdir(parents=True, exist_ok=True)
     if not lessons_path.exists():
@@ -91,6 +101,8 @@ def log_artifact_feedback(agent_name: str, task_description: str, artifact_path:
     产物如果是本地文件（writer/toutiao 生成的草稿），顺手把内容片段也记进去——只有反馈
     文字、没有对照的产物内容，复盘时没法判断问题出在哪，这个片段就是那个对照。
     """
+    if _running_under_pytest():
+        return
     lessons_path = AGENTS_DIR / agent_name / "lessons.md"
     lessons_path.parent.mkdir(parents=True, exist_ok=True)
     if not lessons_path.exists():

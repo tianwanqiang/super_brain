@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>内容工作流 · super_brain</title>
+<style>
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1060px; margin: 30px auto; padding: 0 20px; color: #1b2028; background: #f5f6f8; }
+  h1 { font-size: 22px; }
+  h1 a { font-size: 13px; color: #666; text-decoration: none; margin-left: 12px; }
+  h2 { font-size: 15px; letter-spacing: .05em; color: #666; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 30px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
+  th { background: #eef0f3; font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+  .pill-queued { background: #e8e5df; color: #57503f; }
+  .pill-drafted { background: #fdecd2; color: #a35b00; }
+  .pill-approved { background: #d5ecef; color: #0b6f78; }
+  .pill-published { background: #dcefe0; color: #1e7a3c; }
+  .pill-cancelled, .pill-skipped { background: #eee; color: #777; }
+  .pill-failed { background: #fbe3e0; color: #b3402f; }
+  form.inline { display: flex; gap: 6px; margin: 8px 0; flex-wrap: wrap; align-items: center; }
+  form.inline.compact { display: inline-flex; margin: 0 4px 6px 0; }
+  select, input[type=text], input[type=time], textarea { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px; font-family: inherit; }
+  input[type=text], textarea { min-width: 220px; }
+  button { padding: 6px 13px; border: none; border-radius: 5px; background: #0e6e76; color: #fff; font-size: 13px; cursor: pointer; }
+  button.primary { background: #0e6e76; font-weight: 600; }
+  button.secondary { background: #6b6357; }
+  button.danger { background: #b3402f; }
+  .banner { padding: 10px 14px; border-radius: 6px; margin: 12px 0; font-size: 13.5px; }
+  .banner-ok { background: #dcefe0; border: 1px solid #1e7a3c; color: #1e5c2f; }
+  .banner-err { background: #fbe3e0; border: 1px solid #b3402f; color: #8a2e20; }
+  .muted { color: #888; font-size: 12px; }
+  .card { background: #fff; border: 1px solid #e2e4e8; border-radius: 6px; padding: 12px 14px; margin: 10px 0; }
+  .card-highlight { border: 2px solid #0e6e76; box-shadow: 0 0 0 3px rgba(14,110,118,.12); }
+  tr.row-waiting td { background: #f3fbfb; }
+  pre { background: #171b24; color: #cfd6e0; padding: 10px; border-radius: 6px; font-size: 12px; overflow-x: auto; max-height: 240px; white-space: pre-wrap; }
+  .chk { width: auto; }
+  details.help { margin: 8px 0 4px; background: #eef4f3; border-radius: 6px; padding: 8px 12px; }
+  details.help summary { cursor: pointer; font-weight: 600; color: #0e6e76; }
+  details.help li { margin: 3px 0; }
+  .big-cta { font-size: 14px; padding: 9px 20px; }
+</style>
+</head>
+<body>
+{% include '_font_ctl.html' %}
+
+<h1>内容工作流（定时 → 预览 → 审批）<a href="{{ url_for('admin') }}">← 运维总览</a>
+<a href="{{ url_for('autopublish_page') }}">发布后台</a></h1>
+
+<details class="help" open>
+  <summary>❓ 这个页面怎么用（30 秒版）</summary>
+  <ul>
+    <li><b>定时跑</b>：在 ① 里给某个工作流设时间并勾"启用定时" → 到点自动开一次运行，<b>选题提案会自动生成候选</b>，停在这里等你审核。</li>
+    <li><b>选题从哪来</b>：① 里的"运营方向预设"让定时选题朝该方向出候选；留空则按系统定位（一人公司决策陪练/AI 圆桌）泛选。你审核时可以选候选，也可以填自定义选题。什么都不填也能跑。</li>
+    <li><b>手动跑</b>：② 选工作流 → 填了选题就跳过选题提案直接研究；不填就先生成候选。</li>
+    <li><b>审批节奏</b>：每张卡里"等你审核"的那一行就是要你做的事——点 ✅通过 它才做下一步，打回就停。最后一步自动把定稿交接成发布单，去发布后台继续。</li>
+  </ul>
+</details>
+
+{% if msg %}<div class="banner banner-ok">{{ msg }}</div>{% endif %}
+{% if error %}<div class="banner banner-err">{{ error }}</div>{% endif %}
+
+<h2>① 工作流定义 · 定时 · 选题方向</h2>
+<div class="card">
+  <form method="post" action="{{ url_for('workflows_save') }}">
+    {% for wf_id, wf in workflows.items() %}
+    <div style="margin-bottom:16px; border-bottom:1px dashed #ddd; padding-bottom:10px;">
+      <strong>{{ wf.label }}</strong>（{{ wf_id }}）
+      <table style="margin-top:6px;">
+        <tr>
+          <th style="width:150px;">定时时间 / 启用</th>
+          <td style="width:210px;">
+            <input type="time" name="wf_{{ wf_id }}_time" value="{{ (wf.schedule or {}).get('time', '20:00') or '' }}">
+            <label style="margin-left:6px;"><input type="checkbox" class="chk" name="wf_{{ wf_id }}_enabled" value="1"
+               {% if (wf.schedule or {}).get('enabled') %}checked{% endif %}> 启用</label>
+          </td>
+          <th style="width:120px;">运营方向预设（可选）</th>
+          <td>
+            <input type="text" name="wf_{{ wf_id }}_direction" value="{{ (wf.direction or '') }}"
+                   placeholder="例如：AI 工具测评；或：一人公司经营复盘" style="width:100%; box-sizing:border-box;">
+            <div class="muted">定时自动选题将朝这个方向生成候选；留空则按系统定位泛选。</div>
+          </td>
+        </tr>
+        <tr>
+          <th>步骤与审批开关</th>
+          <td colspan="3">
+            {% for step in wf.steps %}
+            <label style="display:inline-block; margin-right:12px; white-space:nowrap;">
+              <input type="checkbox" class="chk" name="wf_{{ wf_id }}_s{{ loop.index0 }}_approval" value="1"
+                     {% if step.requires_approval %}checked{% endif %}>
+              {{ loop.index }}. {{ step.label }} <span class="muted">(需审批)</span>
+            </label>
+            {% endfor %}
+            <div class="muted">勾选=该步产出后等你点"通过"才继续；不勾=产出后自动放行直接进下一步。</div>
+          </td>
+        </tr>
+      </table>
+    </div>
+    {% endfor %}
+    <button type="submit">保存定义与定时</button>
+  </form>
+</div>
+
+<h2>② 手动触发一次（不等定时，现在就跑）</h2>
+<div class="card">
+  <form method="post" action="{{ url_for('workflows_run_new') }}" class="inline">
+    {% if workflows|length > 1 %}
+    <select name="workflow_id" required>
+      {% for wf_id, wf in workflows.items() %}
+      <option value="{{ wf_id }}">{{ wf_id }}：{{ wf.label }}</option>
+      {% endfor %}
+    </select>
+    {% else %}
+    <input type="hidden" name="workflow_id" value="{{ default_workflow_id }}">
+    <span class="muted">当前只有一个工作流（{{ default_workflow_id }}），无需选择。</span>
+    {% endif %}
+    <input type="text" name="topic" placeholder="选题（填了=跳过选题提案，直接研究；不填=先生成候选）" style="min-width:320px;">
+    <button type="submit" class="primary big-cta">启动一次工作流</button>
+  </form>
+  <div class="muted">真实运行会花 DeepSeek/Tavily 额度——点按钮即触发。</div>
+</div>
+
+<h2>③ 运行与审批队列（{{ runs|length }}）</h2>
+{% for item in runs %}
+{% set run = item.run %}
+<div class="card{% if item.run_id == highlight_run or item.waiting %} card-highlight{% endif %}" id="run-{{ item.run_id }}">
+  <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap;">
+    <div>
+      <span class="pill pill-{% if item.status == '等待审批' %}approved{% elif item.status == '失败' %}failed{% elif item.status == '完成' %}published{% else %}queued{% endif %}">{{ item.status }}</span>
+      {% if item.waiting %}
+      <span style="color:#0e6e76; font-weight:600; margin-left:8px;">→ 现在要你处理：第 {{ item.waiting.index + 1 }} 步「{{ item.waiting.label }}」</span>
+      {% endif %}
+    </div>
+    <div class="muted">
+      {% if workflows|length > 1 %}{{ run.label }} · {% endif %}
+      run <code style="font-size:11px;">{{ run.run_id }}</code> · 创建 {{ run.created_at }}
+    </div>
+  </div>
+  <div class="muted" style="margin:4px 0 8px;">
+    {% if run.topic %}选题：<b>{{ run.topic }}</b>{% else %}选题：（待选题步骤确定）{% endif %}
+    {% if run.direction %} · 方向预设：{{ run.direction }}{% endif %}
+  </div>
+
+  <table>
+    <tr><th>步骤</th><th>状态</th><th>产物预览</th><th>操作</th></tr>
+    {% for step in item.steps %}
+    <tr class="{% if step.status == 'awaiting_approval' %}row-waiting{% endif %}">
+      <td>
+        <strong>{{ step.index + 1 }}. {{ step.label }}</strong>
+        <div class="muted">agent: {{ step.agent }} · {{ step.id }}</div>
+        {% if step.approved_at %}<div class="muted">{{ step.approved_by }} · {{ step.approved_at }}</div>{% endif %}
+        {% if step.error %}<div class="muted" style="color:#b3402f;">{{ step.error[:200] }}</div>{% endif %}
+        {% if step.rejected_reason %}<div class="muted" style="color:#b3402f;">打回原因：{{ step.rejected_reason }}</div>{% endif %}
+      </td>
+      <td><span class="pill {{ pill(step.status) }}">{{ item.zh.get(step.status, step.status) }}</span></td>
+      <td>
+        {% set art = step.artifact %}
+        {% if step.empty_hint %}
+        <div style="background:#fbe3e0; color:#8a2e20; border-radius:4px; padding:4px 8px; margin-bottom:4px; font-size:12px;">
+          ⚠ 本步产物内容为空（模型输出可能被截断/余额不足）——点右边"重跑该步"，或打回/跳过。
+        </div>
+        {% endif %}
+        {% if art %}
+          {% if art.kind == 'research' %}
+            <span class="muted">facts={{ art.facts }} dropped={{ art.dropped }} conflicts={{ art.conflicts }} web={{ art.web_used }}</span>
+            <details><summary class="muted">信息包预览</summary><pre>{{ art.preview }}</pre></details>
+          {% elif art.kind == 'draft' %}
+            <strong>{{ art.title }}</strong>
+            <details><summary class="muted">定稿预览</summary><pre>{{ art.preview }}</pre></details>
+          {% elif art.kind == 'critic' %}
+            <span class="muted">verdict={{ art.verdict }} scores={{ art.scores }}</span>
+            {% if art.must_fix %}<details><summary class="muted">必改点（{{ art.must_fix|length }}）</summary><ul>{% for f in art.must_fix %}<li>{{ f }}</li>{% endfor %}</ul></details>{% endif %}
+          {% elif art.kind == 'topics' %}
+            <form method="post" action="{{ url_for('workflows_step_approve', run_id=run.run_id, step_index=step.index) }}" style="margin:4px 0;">
+              {% for c in art.candidates %}
+              <label style="display:block; margin:4px 0; background:#f6f8fa; padding:6px 9px; border-radius:4px;">
+                <input type="radio" class="chk" name="topic" value="{{ c.title }}" {% if loop.first %}checked{% endif %}>
+                <b>{{ c.title }}</b> <span class="muted">— {{ c.reason or '' }}</span>
+              </label>
+              {% endfor %}
+              <label style="display:inline-block; margin:6px 0;"><input type="radio" class="chk" name="topic" value="__custom__"> 自定义：</label>
+              <input type="text" name="topic_custom" placeholder="自己填一个选题" style="min-width:260px;">
+              <input type="text" name="note" placeholder="备注（可选）" style="min-width:120px;">
+              <button type="submit" class="primary">✅ 确定选题并继续</button>
+            </form>
+          {% elif art.kind == 'publish_order' %}
+            <a href="{{ url_for('autopublish_page') }}">发布单 {{ art.handoff_order_id }} →（去发布后台继续审批）</a>
+          {% else %}
+            <pre>{{ art }}</pre>
+          {% endif %}
+          <details style="margin-top:4px;"><summary class="muted">🔍 查看该步完整返回（JSON，调试用）</summary>
+            <pre>{{ step.artifact_json or '（无产物）' }}</pre>
+          </details>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td style="width:210px;">
+        {% if step.status == 'awaiting_approval' %}
+          {% if (step.artifact or {}).kind != 'topics' %}
+          <form class="inline compact" method="post" action="{{ url_for('workflows_step_approve', run_id=run.run_id, step_index=step.index) }}">
+            <input type="hidden" name="note" value="">
+            <button type="submit" class="primary big-cta">✅ 通过，继续下一步</button>
+          </form>
+          {% endif %}
+          <form class="inline compact" method="post" action="{{ url_for('workflows_step_redo', run_id=run.run_id, step_index=step.index) }}">
+            <button type="submit" class="secondary">重跑该步</button>
+          </form>
+          <form class="inline compact" method="post" action="{{ url_for('workflows_step_reject', run_id=run.run_id, step_index=step.index) }}">
+            <input type="text" name="reason" placeholder="打回原因（可选）" style="min-width:100px;">
+            <button type="submit" class="danger">打回</button>
+          </form>
+          {% if (step.artifact or {}).kind == 'topics' %}
+          <div class="muted">选题请在上方候选区选一个后"确定并继续"。</div>
+          {% endif %}
+        {% elif step.status in ('failed', 'rejected') %}
+          <form class="inline compact" method="post" action="{{ url_for('workflows_step_retry', run_id=run.run_id, step_index=step.index) }}">
+            <button type="submit" class="secondary">重试该步</button>
+          </form>
+          <form class="inline compact" method="post" action="{{ url_for('workflows_step_skip', run_id=run.run_id, step_index=step.index) }}">
+            <input type="text" name="reason" placeholder="跳过原因（可选）" style="min-width:100px;">
+            <button type="submit" class="danger">跳过该步继续</button>
+          </form>
+        {% elif step.status == 'running' %}<span class="muted">执行中…</span>
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <details style="margin-top:6px;"><summary class="muted">🕐 运行轨迹（谁在何时做了什么）</summary>
+    <table style="font-size:12px;">
+      {% for h in run.get('history', []) %}
+      <tr><td style="width:170px;" class="muted">{{ h.at }}</td><td>{{ h.message }}</td></tr>
+      {% else %}
+      <tr><td class="muted">（无记录）</td></tr>
+      {% endfor %}
+    </table>
+  </details>
+
+  {% if item.status not in ('完成',) and not item.waiting %}
+  <form class="inline compact" method="post" action="{{ url_for('workflows_run_stop', run_id=run.run_id) }}" style="margin-top:8px;">
+    <button type="submit" class="danger">停止整个 run</button>
+  </form>
+  {% endif %}
+</div>
+{% else %}
+<p class="muted">还没有运行实例：点 ② 手动启动一次，或到 ① 打开某个工作流的定时等它到点。</p>
+{% endfor %}
+
+</body>
+</html>

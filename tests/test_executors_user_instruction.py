@@ -35,7 +35,7 @@ def test_apply_user_instruction_appends_instruction_to_content():
 def test_generate_content_brief_passes_user_instruction_into_user_turn_not_system_prompt(monkeypatch):
     captured = {}
 
-    def fake_call_deepseek(system_prompt, user_prompt, api_key, max_tokens=None):
+    def fake_call_deepseek(system_prompt, user_prompt, api_key, max_tokens=None, **kwargs):
         captured["system_prompt"] = system_prompt
         captured["user_prompt"] = user_prompt
         return "假简报"
@@ -57,7 +57,7 @@ def test_generate_writer_draft_passes_same_user_instruction_to_both_stages(monke
     """
     captured_calls = []
 
-    def fake_call_deepseek(system_prompt, user_prompt, api_key, max_tokens=None):
+    def fake_call_deepseek(system_prompt, user_prompt, api_key, max_tokens=None, **kwargs):
         captured_calls.append({"system_prompt": system_prompt, "user_prompt": user_prompt})
         return "假输出"
 
@@ -79,7 +79,7 @@ def test_generate_writer_draft_without_user_instruction_behaves_exactly_as_befor
     """
     captured_calls = []
 
-    def fake_call_deepseek(system_prompt, user_prompt, api_key, max_tokens=None):
+    def fake_call_deepseek(system_prompt, user_prompt, api_key, max_tokens=None, **kwargs):
         captured_calls.append(user_prompt)
         return "假输出"
 

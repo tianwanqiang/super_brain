@@ -16,18 +16,16 @@ super_brain config_check - 校验 config.json 结构，不读取/不打印任何
     python config_check.py
 退出码：0 = 没有 error 级别的问题（可能有 warning）；1 = 至少一个 error 级别的问题。
 """
-import json
 import sys
 from dataclasses import dataclass
 
-from paths import SUPER_BRAIN
-
-CONFIG_PATH = SUPER_BRAIN / "config.json"
+import config_store
+from paths import CONFIG_PATH
 
 # (字段名, 严重级别, 缺失时影响的说明) —— error：核心功能会直接崩掉（比如这次真实出问题的
 # DEEPSEEK_API_KEY）；warning：对应功能会优雅降级/跳过，不影响其它功能。
 REQUIRED_FIELDS = [
-    ("DEEPSEEK_API_KEY", "error", "圆桌讨论、dispatcher 起草建议、专家私聊、video-prompt 等核心功能全部依赖这个字段，缺失会导致这些功能一调用就报错"),
+    (config_store.DEEPSEEK_API_KEY_FIELD, "error", "圆桌讨论、dispatcher 起草建议、专家私聊、video-prompt 等核心功能全部依赖这个字段，缺失会导致这些功能一调用就报错"),
     ("DASHSCOPE_API_KEY", "warning", "缺失时 RAG 检索用不了，自动降级成整篇 private.md 注入，不影响圆桌讨论本身"),
     ("DASHSCOPE_WORKSPACE_ID", "warning", "同上，跟 DASHSCOPE_API_KEY 是一对，两个都要配才能用 RAG"),
     ("DASHVECTOR_API_KEY", "warning", "同上，RAG 向量数据库那一半凭据"),
@@ -57,14 +55,15 @@ def validate_config_dict(config: dict) -> list[ConfigIssue]:
 def load_and_validate() -> tuple[list[ConfigIssue], str | None]:
     """返回 (issues, load_error)。load_error 非空时 issues 一定是空列表——文件都读不出来，
     没法做字段级别的校验，这种情况本身就是最高优先级的问题，直接把读取错误原样报出去。
+    读取走 config_store 统一实现（这是唯一真源），按读失败的原因种类给出对应文案。
     """
-    if not CONFIG_PATH.exists():
-        return [], f"config.json 不存在：{CONFIG_PATH}"
     try:
-        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, OSError) as exc:
-        return [], f"config.json 读取/解析失败：{exc}"
-    if not isinstance(config, dict):
+        config = config_store.read_config(path=CONFIG_PATH)
+    except config_store.ConfigReadError as exc:
+        if exc.kind == "missing":
+            return [], f"config.json 不存在：{CONFIG_PATH}"
+        if exc.kind == "parse":
+            return [], f"config.json 读取/解析失败：{exc.detail}"
         return [], "config.json 内容不是一个 JSON 对象（顶层应该是 {...}）"
     return validate_config_dict(config), None
 

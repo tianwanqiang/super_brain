@@ -29,6 +29,7 @@
 </style>
 </head>
 <body>
+{% include '_font_ctl.html' %}
 
 <h1>super_brain 运维<a href="{{ url_for('index') }}">← 回到决策圆桌</a></h1>
 <p>这个页面是配角——发布/运营这些"助手·执行工具"的运维操作放在这里，不占主界面版面。
@@ -89,6 +90,19 @@
 <h2>AIGC 提示词专家</h2>
 <p>把中文描述转成 Seedance 2.0 视频生成提示词，支持多轮追问迭代修改，独立的对话记录，
 不占主界面。<a href="{{ url_for('video_prompt_page') }}" style="color:#34508a; font-weight:600;">打开对话 →</a></p>
+
+<h2>自动化媒体发布流水线（agent4 · publisher 线）</h2>
+<p>发布单队列 / 调度事件 / 渠道开关 / 立即执行按钮都在这里——素材入池(collect) → 物料制作
+(draft) → CEO 人工放行(approve) → 定时发布(dispatch)。<a href="{{ url_for('autopublish_page') }}"
+style="color:#34508a; font-weight:600;">打开自动化发布 →</a></p>
+
+<h2>内容工作流（agent1-4：定时 → 预览 → 审批）</h2>
+<p>定时/手动触发内容流水线：agent1 先跑，每步产物进审批队列，点"通过"才触发下一步，
+直到交接发布单。<a href="{{ url_for('workflows_page') }}" style="color:#34508a; font-weight:600;">打开内容工作流 →</a></p>
+
+<h2>系统配置（密钥 / 目录 / 邮件）</h2>
+<p>在网页里维护 config.json 的配置，已配置值不回显、留空不改、可勾选置空；附 config_check
+体检。<a href="{{ url_for('config_page') }}" style="color:#34508a; font-weight:600;">打开系统配置 →</a></p>
 
 <h2>自动化通道（仅"助手·执行工具"类，走 inbox + dispatcher.py）</h2>
 <p style="font-size:12.5px; color:#888;">

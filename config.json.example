@@ -4,5 +4,29 @@
   "WECHAT_DEFAULT_COVER_URL": "https://mmbiz.qpic.cn/your-default-cover-image-url",
   "MEETING_MINUTES_DIR": "会议纪要存放目录，writer agent 第一次被调用时会问你要这个值，问完自动写进这里，不用手动填",
   "TAVILY_API_KEY": "去 tavily.com 注册后拿到的 key，不填就是空——留空时圆桌专家没有 web_search 工具，自动降级成只凭已有知识框架判断，不会报错",
-  "TOUTIAO_DRAFTS_DIR": "头条草稿存放目录（可选），不填就用 toutiao-agent 项目自带的 drafts/ 目录"
+  "TOUTIAO_DRAFTS_DIR": "头条草稿存放目录（可选），不填就用 toutiao-agent 项目自带的 drafts/ 目录",
+  "PUBLIC_BASE_URL": "公网可达地址（可选），例如 http://服务器IP:5151 或 https://域名——公众号自动生成封面图与邮件链接都优先用它；不填会退回 MAIL.public_base_url，再不行用 127.0.0.1（仅本机可用）",
+  "AUTOPUBLISH": {
+    "master_enabled": false,
+    "note": "自动化媒体发布流水线配置。默认全关：主开关、调度事件、渠道 mode 都要在后台(/admin/autopublish)逐个打开，避免部署后无意识触发真实发布。",
+    "events": [
+      {"id": "collect", "label": "素材入池（扫描 autopublish_sources/）", "time": "18:00", "action": "collect", "enabled": false},
+      {"id": "draft", "label": "物料制作（为待生产发布单生成本地定稿/清单）", "time": "18:30", "action": "draft", "enabled": false},
+      {"id": "dispatch", "label": "发布（把已放行且到点的内容发出去）", "time": "19:30", "action": "dispatch", "enabled": false}
+    ],
+    "channels": {
+      "wechat": {"mode": "manual"},
+      "toutiao": {"mode": "manual"},
+      "video": {"mode": "manual"}
+    }
+  },
+  "MAIL": {
+    "smtp_host": "smtp.example.com",
+    "smtp_port": 465,
+    "username": "you@example.com",
+    "password": "smtp 密码（可用授权码）",
+    "from_addr": "you@example.com",
+    "to_addr": "boss@example.com",
+    "public_base_url": "部署后的外网地址，例如 https://brain.example.com 或 http://服务器IP:5151——用于拼审核链接"
+  }
 }

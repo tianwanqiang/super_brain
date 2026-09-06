@@ -187,7 +187,10 @@ def main():
 
             logger.info(f"[{agent}] {len(messages)} 条待处理留言，真实执行 '{executor_key}'（日期：{today}）...")
             try:
-                results = executor_fn(today, api_key)
+                # 第三个参数 messages 是给需要"留言内容当输入"的 executor 用的（比如
+                # researcher 把留言当选题、critic 把留言当草稿路径）；不需要的 executor
+                # 在签名里显式声明 messages=None 忽略它，保持原行为不变。
+                results = executor_fn(today, api_key, messages)
             except Exception:
                 logger.exception(f"[{agent}] executor '{executor_key}' 执行时抛出未捕获异常，"
                                   f"完整堆栈见上——这类异常说明 publishers.py 里少了一层针对性的错误处理，"

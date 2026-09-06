@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>自动化媒体发布 · super_brain</title>
+<style>
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1080px; margin: 30px auto; padding: 0 20px; color: #1b2028; background: #f5f6f8; }
+  h1 { font-size: 22px; }
+  h1 a { font-size: 13px; color: #666; text-decoration: none; margin-left: 14px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em; color: #666; border-bottom: 1px solid #ddd; padding-bottom: 6px; margin-top: 34px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5e5; vertical-align: top; }
+  th { background: #eef0f3; font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; }
+  .pill-queued { background: #e8e5df; color: #57503f; }
+  .pill-drafted { background: #fdecd2; color: #a35b00; }
+  .pill-approved { background: #e0f0ef; color: #0e6e76; }
+  .pill-published { background: #dcefe0; color: #1e7a3c; }
+  .pill-needs_manual { background: #ece1f7; color: #6b3fa0; }
+  .pill-failed { background: #fbe3e0; color: #b3402f; }
+  .pill-skipped, .pill-cancelled { background: #eee; color: #777; }
+  form.inline { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+  form.inline.compact { display: inline-flex; margin: 0 4px 4px 0; }
+  select, input[type=text], input[type=time], textarea { padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13.5px; font-family: inherit; }
+  input[type=text], textarea { min-width: 220px; }
+  textarea { width: 100%; }
+  button { padding: 6px 14px; border: none; border-radius: 4px; background: #0e6e76; color: #fff; font-size: 13px; cursor: pointer; }
+  button.secondary { background: #6b6357; }
+  button.danger { background: #b3402f; }
+  .banner { padding: 10px 14px; border-radius: 6px; margin: 12px 0; font-size: 13.5px; }
+  .banner-ok { background: #dcefe0; border: 1px solid #1e7a3c; color: #1e5c2f; }
+  .banner-err { background: #fbe3e0; border: 1px solid #b3402f; color: #8a2e20; }
+  .muted { color: #888; font-size: 12.5px; }
+  .card { background: #fff; border: 1px solid #e2e4e8; border-radius: 6px; padding: 12px 14px; margin: 10px 0; }
+  pre { background: #171b24; color: #cfd6e0; padding: 12px; border-radius: 6px; font-size: 11.5px; overflow-x: auto; max-height: 300px; white-space: pre-wrap; }
+  .chk { width: auto; }
+</style>
+</head>
+<body>
+{% include '_font_ctl.html' %}
+
+<h1>自动化媒体发布流水线<a href="{{ url_for('admin') }}">← 运维总览</a><a href="{{ url_for('index') }}">主界面</a></h1>
+<p class="muted">
+  素材入池(collect) → 物料制作(draft) → CEO 人工放行(approve) → 定时发布(dispatch)。
+  这是 agent4（publisher 线）的后台。发布侧三个角色（publish-planner/media-maker/gatekeeper/
+  publisher）的职责见 agents.yaml；调度逻辑在 autopublish.py。
+</p>
+
+{% if msg %}<div class="banner banner-ok">{{ msg }}</div>{% endif %}
+{% if error %}<div class="banner banner-err">{{ error }}</div>{% endif %}
+
+<h2>① 全局开关与调度事件</h2>
+<div class="card">
+  <form method="post" action="{{ url_for('autopublish_save_config') }}">
+    <label style="font-size:14px;">
+      <input type="checkbox" class="chk" name="master_enabled" value="1"
+             {% if master_enabled %}checked{% endif %}> 全局主开关 master_enabled
+      <span class="muted">—— 关闭时所有"发布"动作一律不执行（collect/draft 零成本动作仍可在下方手动触发）；默认关闭。</span>
+    </label>
+    <table style="margin-top:10px;">
+      <tr><th>事件</th><th>时间 (HH:MM)</th><th>启用</th></tr>
+      {% for ev in cfg.events %}
+      <tr>
+        <td>{{ ev.label or action_labels.get(ev.action, ev.action) }}</td>
+        <td><input type="time" name="event_{{ ev.id }}_time" value="{{ ev.time or '' }}"></td>
+        <td><input type="checkbox" class="chk" name="event_{{ ev.id }}_enabled" value="1"
+                   {% if ev.enabled %}checked{% endif %}></td>
+      </tr>
+      {% endfor %}
+    </table>
+    <table style="margin-top:10px;">
+      <tr><th>渠道</th><th>发布 mode</th><th>当前能力（autopublish.CHANNELS）</th></tr>
+      {% for ch, meta in channels_meta.items() %}
+      <tr>
+        <td><strong>{{ meta.label }}</strong></td>
+        <td>
+          <select name="ch_{{ ch }}_mode">
+            {% set m = (channel_conf.get(ch) or {}).get('mode', 'manual') %}
+            {% for mode in ['manual', 'mock', 'api'] %}
+            <option value="{{ mode }}" {% if m == mode %}selected{% endif %}>
+              {{ {'manual': 'manual（无自动发布执行器→需人工）', 'mock': 'mock（模拟发布，无真实外部动作）', 'api': 'api（真实发布接口）'}[mode] }}
+            </option>
+            {% endfor %}
+          </select>
+        </td>
+        <td class="muted">{{ meta.publish_note }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <button type="submit">保存配置</button>
+  </form>
+</div>
+
+<h2>② 立即执行（测试用，不用等调度到点）</h2>
+<div class="card">
+  <form class="inline" method="post" action="{{ url_for('autopublish_run_now') }}">
+    <input type="hidden" name="action" value="collect">
+    <button type="submit">素材入池：扫描 {{ sources_dir }}</button>
+  </form>
+  <form class="inline" method="post" action="{{ url_for('autopublish_run_now') }}">
+    <input type="hidden" name="action" value="draft">
+    <button type="submit">物料制作：处理全部 queued 发布单</button>
+  </form>
+  <form class="inline" method="post" action="{{ url_for('autopublish_run_now') }}">
+    <input type="hidden" name="action" value="dispatch">
+    <button type="submit" class="secondary">发布：已放行且到点（受主开关约束）</button>
+  </form>
+  <p class="muted">运行目录：队列 {{ queue_dir }} ／ 物料 {{ artifacts_dir }}</p>
+</div>
+
+<h2>③ 新建发布单（手动入池）</h2>
+<div class="card">
+  <form method="post" action="{{ url_for('autopublish_order_new') }}">
+    <table>
+      <tr><td>标题</td><td><input type="text" name="title" placeholder="必填" required></td></tr>
+      <tr><td>正文（素材）</td><td><textarea name="text" rows="6" placeholder="骨架版发布单直接贴内容；researcher 信息包/素材自动导入为扩展点"></textarea></td></tr>
+      <tr>
+        <td>渠道</td>
+        <td>
+          {% for ch, meta in channels_meta.items() %}
+          <label style="margin-right:14px;"><input type="checkbox" class="chk" name="channels" value="{{ ch }}" checked> {{ meta.label }}</label>
+          {% endfor %}
+        </td>
+      </tr>
+      <tr><td>计划发布时间</td><td><input type="time" name="publish_at"> <span class="muted">可留空（跟随"发布"事件/按钮）</span></td></tr>
+    </table>
+    <button type="submit">创建发布单</button>
+  </form>
+</div>
+
+<h2>④ 发布单队列（{{ view_orders|length }}）</h2>
+{% for v in view_orders %}
+{% set o = v.order %}
+<div class="card">
+  <table style="border:none;">
+    <tr>
+      <td style="width:38%;"><strong>{{ o.title }}</strong>
+        <span class="pill pill-{{ v.summary }}">{{ v.summary }}</span>
+      </td>
+      <td><code style="font-size:11.5px;">{{ o.id }}</code></td>
+      <td>创建 {{ o.created_at }}</td>
+      <td>计划发布 {% if (o.plan or {}).publish_at %}{{ o.plan.publish_at }}{% else %}<span class="muted">跟随事件</span>{% endif %}</td>
+    </tr>
+  </table>
+  <table>
+    <tr><th>渠道</th><th>状态</th><th>物料</th><th>操作</th></tr>
+    {% for ch, st in o.channels.items() %}
+    <tr>
+      <td>{{ (channels_meta.get(ch) or {}).label }}（{{ ch }}）</td>
+      <td><span class="pill pill-{{ st.status }}">{{ st.status }}</span>
+        {% if st.error %}<div class="muted" style="color:#b3402f;">{{ st.error[:120] }}</div>{% endif %}
+      </td>
+      <td>
+        {% set art = st.artifact or {} %}
+        {% if art.path %}
+          {% if art.path.endswith('.md') %}
+            <a href="{{ url_for('draft_preview', path=art.path) }}" target="_blank">预览定稿</a>
+          {% else %}
+            <code style="font-size:11px;">{{ art.path }}</code>
+          {% endif %}
+          {% if art.draft_media_id %}<div class="muted">draft_media_id={{ art.draft_media_id }}</div>{% endif %}
+        {% else %}<span class="muted">—</span>{% endif %}
+      </td>
+      <td>
+        {% if st.status == 'drafted' or st.status == 'needs_manual' %}
+        <form class="inline compact" method="post" action="{{ url_for('autopublish_order_approve', order_id=o.id) }}">
+          <input type="hidden" name="channel" value="{{ ch }}">
+          <button type="submit">批准发布</button>
+        </form>
+        <form class="inline compact" method="post" action="{{ url_for('autopublish_order_reject', order_id=o.id) }}">
+          <input type="hidden" name="channel" value="{{ ch }}">
+          <input type="text" name="reason" placeholder="打回原因（可选）" style="min-width:130px;">
+          <button type="submit" class="secondary">打回</button>
+        </form>
+        {% elif st.status == 'approved' %}
+        <span class="muted">已放行（{{ st.approved_at }}），等调度发布</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  <div style="margin-top:8px;">
+    <form class="inline compact" method="post" action="{{ url_for('autopublish_order_draft', order_id=o.id) }}">
+      <button type="submit" class="secondary">物料制作（本单）</button>
+    </form>
+    {% if o.channels.get('wechat') %}
+    <form class="inline compact" method="post" action="{{ url_for('autopublish_order_push_wechat', order_id=o.id) }}">
+      <button type="submit">推送到公众号草稿箱（真实微信 API）</button>
+    </form>
+    {% endif %}
+    <form class="inline compact" method="post" action="{{ url_for('autopublish_order_publish', order_id=o.id) }}">
+      <button type="submit" {% if not master_enabled %}title="全局主开关未打开" disabled{% endif %}>立即发布（本单）</button>
+    </form>
+    <form class="inline compact" method="post" action="{{ url_for('autopublish_order_cancel', order_id=o.id) }}">
+      <input type="hidden" name="reason" value="CEO 手动取消">
+      <button type="submit" class="danger">取消</button>
+    </form>
+    <form class="inline compact" method="post" action="{{ url_for('autopublish_order_delete', order_id=o.id) }}">
+      <button type="submit" class="danger">删除</button>
+    </form>
+  </div>
+  <details style="margin-top:8px;"><summary class="muted">查看发布单 JSON</summary><pre>{{ v.json }}</pre></details>
+</div>
+{% else %}
+<p class="muted">还没有发布单。用上面的"新建发布单"或先把素材文件放进 sources 目录再点"素材入池"。</p>
+{% endfor %}
+
+</body>
+</html>
