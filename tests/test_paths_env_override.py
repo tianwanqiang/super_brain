@@ -6,7 +6,7 @@ paths.py 的常量是模块导入时算好的，同进程里 reload 顺序很容
 引用而产生假阳性/假阴性，子进程最干净、最接近真实的"设了环境变量再启动进程"场景（对应
 Dockerfile 里 `ENV SUPER_BRAIN_DIR=/app` 的真实用法）。
 
-背景：log_setup.py 曾经有一行硬编码的 `Path(r"G:\\code\\super_brain\\logs")`，完全不跟
+背景：log_setup.py 曾经有一行硬编码的 Windows 本机绝对路径（logs 目录）完全不跟
 SUPER_BRAIN_DIR 联动——部署到 Linux 服务器后，因为反斜杠在 Linux 上不是路径分隔符，
 真的建出了一个文件名字面包含反斜杠的怪目录（ls 默认引号显示风格会把这种文件名用单引号
 包起来，这正是 2026-09-04 真实报出来的现象）。这里把"LOG_DIR 必须跟随 SUPER_BRAIN_DIR"

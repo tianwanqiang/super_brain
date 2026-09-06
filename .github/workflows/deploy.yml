@@ -8,6 +8,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      # 让代码/日志目录落在本机检出路径内，而不是回落到任何本机默认路径——
+      # 避免把开发者本地路径（如 G:\code\...）泄漏进 CI 日志/失败信息。
+      SUPER_BRAIN_DIR: ${{ github.workspace }}
+      OPC_ROOT_DIR: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
 

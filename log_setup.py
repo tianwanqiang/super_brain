@@ -29,7 +29,9 @@ def configure_logging(console_level: int = logging.INFO, file_level: int = loggi
     if _configured:
         return
 
-    LOG_DIR.mkdir(exist_ok=True)
+    # parents=True：fresh checkout / CI（Linux 上默认 SUPER_BRAIN 也可能不存在 logs 目录）
+    # 时也要能建出来；以前只有 mkdir(exist_ok=True) 在父目录缺失时会 FileNotFoundError。
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     formatter = logging.Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

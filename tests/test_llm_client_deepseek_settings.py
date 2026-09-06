@@ -1,6 +1,6 @@
 """
 llm_client.load_deepseek_settings() 的测试——Model/BaseUrl/MaxTokens 三个可选字段，
-配置逻辑直接照抄头条 agent（G:\\code\\toutiao-agent\\Generate-ToutiaoDraft.ps1）：
+配置逻辑直接照抄兄弟项目 toutiao-agent 的 Generate-ToutiaoDraft.ps1：
 字段存在且非空就用配置值覆盖内置默认值，缺了/是空值就静默用内置默认值。
 
 分两类，边界跟 test_config_validation.py 一样说清楚：
