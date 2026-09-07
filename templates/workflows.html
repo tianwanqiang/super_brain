@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>内容工作流 · super_brain</title>
 <style>
   body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1080px; margin: 28px auto; padding: 0 20px 60px; color: #1b2028; background: #f5f6f8; }
@@ -57,7 +58,7 @@
 <body>
 {% include '_font_ctl.html' %}
 
-<h1>内容工作流<a href="{{ url_for('admin') }}">← 运维总览</a><a href="{{ url_for('autopublish_page') }}">发布后台</a></h1>
+<h1>内容工作流<a href="{{ url_for('admin') }}">← 运维总览</a><a href="{{ url_for('autopublish_page') }}">发布后台</a><a href="{{ url_for('index') }}">主界面</a></h1>
 <p class="sub">定时跑 · 预览 · 逐步审批。这是 agent1-4 内容流水线的总控台。</p>
 
 <details class="help">

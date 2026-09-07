@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>系统配置 · super_brain</title>
 <style>
   body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 900px; margin: 30px auto; padding: 0 20px; color: #1b2028; background: #f5f6f8; }
@@ -88,12 +89,12 @@
   </table></div>
 
   <button type="submit">保存配置</button>
-  <button type="submit" form="test-mail-form" style="background:#6b6357;">发送测试邮件（验证 MAIL 配置）</button>
 </form>
 
-<form id="test-mail-form" method="post" action="{{ url_for('config_test_mail') }}" style="display:none;"></form>
-
-<p class="muted">说明：AUTOPUBLISH / CONTENT_WORKFLOWS 等结构配置在各自的后台页维护（发布后台 / 内容工作流）；填完可在本页顶部看到 config_check 体检结果。</p>
+<form id="test-mail-form" method="post" action="{{ url_for('config_test_mail') }}">
+  <button type="submit" style="background:#6b6357;">发送测试邮件（验证 MAIL 配置）</button>
+</form>
+<p class="muted">说明：测试邮件会发到上面配置的 MAIL.to 地址，用来确认 SMTP 设置是否正确。</p>
 
 </body>
 </html>

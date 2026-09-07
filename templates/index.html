@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>决策圆桌 · super_brain</title>
 <style>
   :root {
@@ -266,6 +267,8 @@
   .expert-chips label[data-agent="finance"]:has(input:checked) { background: #0e6e76; }
   .expert-chips label[data-agent="marketing"]:has(input:checked) { background: #a35b00; }
   .expert-chips label[data-agent="legal"]:has(input:checked) { background: #3f5b7a; }
+  .expert-chips label[data-agent="aigc-trends"]:has(input:checked) { background: #2e7d32; }
+  .expert-chips label[data-agent="commercialization"]:has(input:checked) { background: #c62828; }
 
   .composer-row { display: flex; gap: 8px; align-items: flex-end; }
   .composer-row textarea {
@@ -277,15 +280,54 @@
     font-size: 13.5px; cursor: pointer; flex: 0 0 auto;
   }
   .composer-hint { font-size: 11px; color: var(--muted); }
+
+  /* ---------- Toast 通知 ---------- */
+  .toast-container {
+    position: fixed; top: 16px; right: 16px; z-index: 9999;
+    display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+  }
+  .toast {
+    background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    padding: 10px 16px; border-radius: 8px; font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,.1);
+    animation: toast-in 0.3s ease-out;
+  }
+  .toast-error { border-left-color: #b3402f; }
+  .toast-success { border-left-color: #1e7a3c; }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: none; } }
+
+  /* ---------- 侧边栏切换按钮（移动端） ---------- */
+  .sidebar-toggle {
+    display: none; position: fixed; top: 10px; left: 10px; z-index: 200;
+    width: 36px; height: 36px; border: none; border-radius: 8px;
+    background: var(--surface); box-shadow: 0 1px 4px rgba(0,0,0,.15);
+    font-size: 18px; cursor: pointer; line-height: 1;
+  }
+
+  @media (max-width: 768px) {
+    .sidebar {
+      position: fixed; top: 0; left: 0; z-index: 100; height: 100vh;
+      transform: translateX(-100%); transition: transform 0.2s;
+    }
+    .sidebar.open { transform: translateX(0); box-shadow: 2px 0 12px rgba(0,0,0,.15); }
+    .sidebar-toggle { display: block; }
+    .bubble-user, .bubble-agent { max-width: 92%; }
+    .expert-chips label { font-size: 11.5px; padding: 4px 8px; }
+    header h1 span { display: none; }
+    header { padding: 14px 16px 14px 52px; }
+    form.composer { padding: 10px 16px 14px; }
+    main.chat { padding: 16px; }
+  }
 </style>
 </head>
 <body>
 
-{% set agent_colors = {'strategy': '#6b3fa0', 'finance': '#0e6e76', 'marketing': '#a35b00', 'legal': '#3f5b7a'} %}
+{% set agent_colors = {'strategy': '#6b3fa0', 'finance': '#0e6e76', 'marketing': '#a35b00', 'legal': '#3f5b7a', 'aigc-trends': '#2e7d32', 'commercialization': '#c62828'} %}
+
+<button class="sidebar-toggle" id="sidebarToggle" aria-label="切换侧边栏">☰</button>
 
 <div class="app">
 
-<aside class="sidebar">
+<aside class="sidebar" id="sidebar">
   <div class="sidebar-header">
     <h1>决策圆桌</h1>
     <div class="sub">super_brain · Python 直连 DeepSeek</div>
@@ -355,8 +397,9 @@
   <h1>{{ active_conversation.title if active_conversation else '新建会话' }}
     <span>{% if active_conversation %}{{ active_conversation.turns|length }} 轮讨论{% else %}尚未开始{% endif %}</span>
   </h1>
+  <a href="{{ url_for('today_digest') }}">今日待办</a>
   <a href="{{ url_for('private_chat_list') }}">专家私聊</a>
-  <a href="{{ url_for('admin') }}">运维（inbox / 发布通道）→</a>
+  <a href="{{ url_for('admin') }}">运维 →</a>
 </header>
 
 {% if not meeting_minutes_dir %}
@@ -415,6 +458,7 @@
       {% endfor %}
     </div>
 
+    {% if loop.last %}
     <div class="mention-box">
       <form class="mention-form" method="post" action="{{ url_for('roundtable_mention') }}">
         <input type="hidden" name="conversation_id" value="{{ active_conversation_id }}">
@@ -436,6 +480,7 @@
         <button type="submit">开始私聊</button>
       </form>
     </div>
+    {% endif %}
     {% if active_conversation.mentions %}
     {% for m in active_conversation.mentions %}
     {% if m.agent in turn.agents %}
@@ -592,7 +637,42 @@
 </div>
 </div>
 
+<div class="toast-container" id="toastContainer"></div>
+
 <script>
+  // ---------- Toast 通知 ----------
+  (function () {
+    var params = new URLSearchParams(window.location.search);
+    var toastMsg = params.get('toast');
+    var toastType = params.get('toast_type') || 'success';
+    if (toastMsg) {
+      var container = document.getElementById('toastContainer');
+      var el = document.createElement('div');
+      el.className = 'toast toast-' + toastType;
+      el.textContent = toastMsg;
+      container.appendChild(el);
+      setTimeout(function () { el.remove(); }, 4000);
+      // 清理 URL 参数
+      params.delete('toast'); params.delete('toast_type');
+      var clean = params.toString() ? '?' + params.toString() : window.location.pathname;
+      history.replaceState(null, '', clean);
+    }
+  })();
+
+  // ---------- 侧边栏切换（移动端） ----------
+  (function () {
+    var toggle = document.getElementById('sidebarToggle');
+    var sidebar = document.getElementById('sidebar');
+    if (toggle && sidebar) {
+      toggle.addEventListener('click', function () { sidebar.classList.toggle('open'); });
+      document.addEventListener('click', function (e) {
+        if (sidebar.classList.contains('open') && !sidebar.contains(e.target) && e.target !== toggle) {
+          sidebar.classList.remove('open');
+        }
+      });
+    }
+  })();
+
   var chat = document.getElementById('chat');
   chat.scrollTop = chat.scrollHeight;
 
@@ -600,7 +680,7 @@
   var sendBtn = document.getElementById('sendBtn');
   var hint = document.getElementById('composerHint');
   var AGENT_LABELS = {{ agent_labels_json | safe }};
-  var AGENT_COLORS = {strategy: '#6b3fa0', finance: '#0e6e76', marketing: '#a35b00', legal: '#3f5b7a', synthesis: '#a35b00'};
+  var AGENT_COLORS = {strategy: '#6b3fa0', finance: '#0e6e76', marketing: '#a35b00', legal: '#3f5b7a', 'aigc-trends': '#2e7d32', commercialization: '#c62828', synthesis: '#a35b00'};
   var ORIGINAL_SEND_LABEL = sendBtn.textContent;
 
   function labelOf(name) { return AGENT_LABELS[name] || name; }

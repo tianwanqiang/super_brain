@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>自动化媒体发布 · super_brain</title>
 <style>
   body { font-family: -apple-system, "Microsoft YaHei", sans-serif; max-width: 1080px; margin: 30px auto; padding: 0 20px; color: #1b2028; background: #f5f6f8; }
@@ -78,7 +79,7 @@
             {% set m = (channel_conf.get(ch) or {}).get('mode', 'manual') %}
             {% for mode in ['manual', 'mock', 'api'] %}
             <option value="{{ mode }}" {% if m == mode %}selected{% endif %}>
-              {{ {'manual': 'manual（无自动发布执行器→需人工）', 'mock': 'mock（模拟发布，无真实外部动作）', 'api': 'api（真实发布接口）'}[mode] }}
+              {{ {'manual': '人工发布（无自动执行器）', 'mock': '模拟发布（不真实调用外部接口）', 'api': 'API 发布（真实发布接口）'}[mode] }}
             </option>
             {% endfor %}
           </select>
