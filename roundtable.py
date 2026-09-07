@@ -132,7 +132,7 @@ def _run_round3_synthesis(question: str, agent_names: list[str], round1: dict[st
     prompt = _round3_synthesis_prompt(question, agent_names, round1, round2)
     if stream_queue is not None:
         full_parts: list[str] = []
-        for event in call_deepseek_stream(prompt, "请输出收敛结论。", api_key, max_tokens=3000):
+        for event in call_deepseek_stream(prompt, "请输出收敛结论。", api_key, max_tokens=8000):
             if event["type"] in ("reasoning", "content"):
                 stream_queue.put({"agent": "synthesis", "round": 3, "type": event["type"], "delta": event["delta"]})
                 if event["type"] == "content":
@@ -143,7 +143,7 @@ def _run_round3_synthesis(question: str, agent_names: list[str], round1: dict[st
         raw = "".join(full_parts)
     else:
         try:
-            raw = call_deepseek(prompt, "请输出收敛结论。", api_key, max_tokens=3000)
+            raw = call_deepseek(prompt, "请输出收敛结论。", api_key, max_tokens=8000)
         except Exception:
             logger.exception("Round 3 结论收敛调用失败")
             return {"decision": "（结论收敛调用失败，详情看日志，原始 Round 1/2 记录仍保留在上面）",
