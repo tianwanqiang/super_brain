@@ -204,7 +204,7 @@ def _run_round(agent_names: list[str], api_key: str,
     results: dict[str, str] = {}
 
     def _run_one_streaming(name: str) -> str:
-        messages = list(initial_messages_per_agent[name])  # 浅拷贝，不污染原始
+        messages = list(initial_messages_per_agent[name])
         messages.append({"role": "user", "content": user_prompt})
 
         if tavily_api_key and round_num == 1:
@@ -224,8 +224,9 @@ def _run_round(agent_names: list[str], api_key: str,
             elif event["type"] == "done":
                 full_content = event["content"]
         stream_queue.put({"agent": name, "round": round_num, "type": "agent_done"})
-        # 把 assistant 回复追加进 messages 历史（调用方持有引用，自动更新）
         messages.append({"role": "assistant", "content": full_content or "".join(full_parts)})
+        # 更新原始 dict，让后续轮次能看到这轮的 user+assistant
+        initial_messages_per_agent[name] = messages
         return full_content or "".join(full_parts)
 
     def _run_one_blocking(name: str) -> str:
@@ -233,14 +234,11 @@ def _run_round(agent_names: list[str], api_key: str,
         messages.append({"role": "user", "content": user_prompt})
 
         if tavily_api_key and round_num == 1:
-            # 阻塞模式 Round 1 带工具：走原来的 call_deepseek_with_tools
-            # 但这里需要把 messages 的前两条拆出来当 system+user，后续历史拼在中间
-            # 简化处理：用 call_deepseek_messages（不带工具）——阻塞模式下 Round 1 的
-            # web_search 能力让位给多轮上下文连续性，优先级更高
             result = call_deepseek_messages(messages, api_key, max_tokens=8000)
         else:
             result = call_deepseek_messages(messages, api_key, max_tokens=8000)
         messages.append({"role": "assistant", "content": result})
+        initial_messages_per_agent[name] = messages
         return result
 
     submit_fn = _run_one_streaming if stream_queue is not None else _run_one_blocking
