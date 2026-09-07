@@ -197,6 +197,209 @@ def call_deepseek_messages(messages: list[dict], api_key: str,
     )
 
 
+def call_deepseek_messages_stream(messages: list[dict], api_key: str,
+                                   model: str | None = None, base_url: str | None = None,
+                                   max_tokens: int | None = None,
+                                   tools: list[dict] | None = None):
+    """call_deepseek_messages 的流式版本——接受完整的 messages 数组（多轮对话），同时支持
+    可选的 tools（function calling）。用于圆桌讨论的 Round 1（带 web_search 工具 + 多轮
+    上下文延续）。
+
+    跟 call_deepseek_stream 的区别：后者只接受 system+user 两条消息（无状态），这里接受
+    任意长度的 messages 数组（有状态，支持多轮上下文延续）。
+    跟 call_deepseek_with_tools_stream 的区别：后者也只接受 system+user，这里接受完整
+    messages 历史。
+
+    yield {"type": "reasoning"|"content", "delta": str}，最后 yield {"type": "done", "content": 完整正文}。
+    """
+    settings = load_deepseek_settings()
+    model = model or settings["model"]
+    base_url = base_url or settings["base_url"]
+    max_tokens = max_tokens or settings["max_tokens"]
+    body: dict = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "messages": messages,
+    }
+    if tools:
+        body["tools"] = tools
+    req = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    logger.debug(
+        f"DeepSeek messages 流式请求 -> model={model}, max_tokens={max_tokens}, "
+        f"messages数={len(messages)}, tools={'有' if tools else '无'}"
+    )
+
+    full_content_parts: list[str] = []
+    full_reasoning_parts: list[str] = []
+    finish_reason = None
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[len("data:"):].strip()
+                if payload == "[DONE]":
+                    break
+                chunk = json.loads(payload)
+                choice = chunk["choices"][0]
+                delta = choice.get("delta", {})
+                finish_reason = choice.get("finish_reason") or finish_reason
+
+                reasoning_delta = delta.get("reasoning_content")
+                if reasoning_delta:
+                    full_reasoning_parts.append(reasoning_delta)
+                    yield {"type": "reasoning", "delta": reasoning_delta}
+
+                content_delta = delta.get("content")
+                if content_delta:
+                    full_content_parts.append(content_delta)
+                    yield {"type": "content", "delta": content_delta}
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        logger.error(f"DeepSeek messages 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        raise
+
+    full_content = "".join(full_content_parts).strip()
+    logger.info(
+        f"DeepSeek messages 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"content_chars={len(full_content)}, reasoning_chars={len(''.join(full_reasoning_parts))}"
+    )
+    if not full_content:
+        logger.warning(
+            f"DeepSeek messages 流式返回的 content 是空的！finish_reason={finish_reason}，"
+            f"很可能是 max_tokens 不够、被截断在思考阶段。"
+        )
+    yield {"type": "done", "content": full_content}
+
+
+def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
+                                              tavily_api_key: str | None = None,
+                                              model: str | None = None,
+                                              base_url: str | None = None,
+                                              max_tokens: int | None = None,
+                                              max_tool_rounds: int = 3):
+    """call_deepseek_with_tools_stream 的多轮版本——接受完整的 messages 历史，同时支持
+    web_search 工具调用循环。用于圆桌讨论 Round 1（专家需要 web_search + 多轮上下文延续）。
+
+    跟 call_deepseek_with_tools_stream 的区别：后者只接受 system+user 两条消息，这里
+    接受任意长度的 messages 数组，工具调用结果追加进 messages 后继续对话。
+
+    yield {"type": "reasoning"|"content", "delta": str}，最后 yield {"type": "done", "content": 完整正文}。
+    """
+    settings = load_deepseek_settings()
+    model = model or settings["model"]
+    base_url = base_url or settings["base_url"]
+    max_tokens = max_tokens or settings["max_tokens"]
+    tools = [WEB_SEARCH_TOOL_SCHEMA] if tavily_api_key else None
+
+    for round_num in range(max_tool_rounds + 1):
+        body: dict = {"model": model, "max_tokens": max_tokens, "stream": True, "messages": messages}
+        if tools:
+            body["tools"] = tools
+        req = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+
+        content_parts: list[str] = []
+        tool_call_acc: dict[int, dict] = {}
+        finish_reason = None
+
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload = line[len("data:"):].strip()
+                    if payload == "[DONE]":
+                        break
+                    chunk = json.loads(payload)
+                    choice = chunk["choices"][0]
+                    delta = choice.get("delta", {})
+                    finish_reason = choice.get("finish_reason") or finish_reason
+
+                    reasoning_delta = delta.get("reasoning_content")
+                    if reasoning_delta:
+                        yield {"type": "reasoning", "delta": reasoning_delta}
+
+                    content_delta = delta.get("content")
+                    if content_delta:
+                        content_parts.append(content_delta)
+                        yield {"type": "content", "delta": content_delta}
+
+                    for tc_delta in delta.get("tool_calls") or []:
+                        idx = tc_delta.get("index", 0)
+                        acc = tool_call_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                        if tc_delta.get("id"):
+                            acc["id"] = tc_delta["id"]
+                        func = tc_delta.get("function") or {}
+                        if func.get("name"):
+                            acc["name"] += func["name"]
+                        if func.get("arguments"):
+                            acc["arguments"] += func["arguments"]
+        except urllib.error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            logger.error(f"DeepSeek messages 工具流式调用失败：HTTP {exc.code}，响应体：{error_body}")
+            raise
+
+        logger.info(
+            f"DeepSeek messages 工具流式轮次 {round_num} -> finish_reason={finish_reason}, "
+            f"tool_calls={len(tool_call_acc)}"
+        )
+
+        if not tool_call_acc:
+            full_content = "".join(content_parts).strip()
+            if not full_content:
+                logger.warning("DeepSeek messages 工具流式循环结束但 content 为空")
+            yield {"type": "done", "content": full_content}
+            return
+
+        # 触发了工具调用——真实执行，把结果追加进 messages 继续下一轮
+        messages.append({
+            "role": "assistant",
+            "content": "".join(content_parts) or None,
+            "tool_calls": [
+                {"id": acc["id"], "type": "function",
+                 "function": {"name": acc["name"], "arguments": acc["arguments"]}}
+                for acc in tool_call_acc.values()
+            ],
+        })
+        for acc in tool_call_acc.values():
+            try:
+                args = json.loads(acc["arguments"])
+            except json.JSONDecodeError:
+                args = {}
+            if acc["name"] == "web_search" and tavily_api_key:
+                query = args.get("query", "")
+                logger.info(f"专家发起 web_search（messages 流式）：{query!r}")
+                try:
+                    result_text = tavily_search(query, tavily_api_key)
+                except Exception as exc:
+                    result_text = f"搜索失败：{exc}"
+                    logger.exception("Tavily 搜索失败")
+            else:
+                result_text = "这个工具当前不可用（未配置搜索 API Key）。"
+            messages.append({
+                "role": "tool",
+                "tool_call_id": acc["id"],
+                "content": result_text,
+            })
+
+    logger.warning(f"messages 工具流式循环达到最大轮数 {max_tool_rounds}，强制结束")
+    yield {"type": "done", "content": "".join(content_parts).strip()}
+
+
 def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
                           model: str | None = None, base_url: str | None = None,
                           max_tokens: int | None = None):

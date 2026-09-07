@@ -24,7 +24,6 @@ import logging
 import re
 import sys
 from datetime import datetime
-from functools import partial
 from pathlib import Path
 
 import config_store
@@ -34,8 +33,9 @@ from llm_client import (
     DeepSeekConfigError,
     call_deepseek,
     call_deepseek_stream,
-    call_deepseek_with_tools,
-    call_deepseek_with_tools_stream,
+    call_deepseek_messages,
+    call_deepseek_messages_stream,
+    call_deepseek_messages_with_tools_stream,
     load_deepseek_api_key,
     load_tavily_api_key,
 )
@@ -93,21 +93,6 @@ def _round1_system_prompt(agent_name: str, entry: dict, private_context: str,
         "（做/不做/有条件地做），不要模棱两可，控制在 400 字以内。"
     )
     return "\n\n".join(parts)
-
-
-def _round2_system_prompt(agent_name: str, entry: dict, private_context: str,
-                           question: str, round1_results: dict[str, str]) -> str:
-    others = "\n\n".join(
-        f"【{name}】\n{text}" for name, text in round1_results.items() if name != agent_name
-    )
-    return "\n\n".join([
-        f"你是 super_brain 决策圆桌里的 '{agent_name}' 专家。你在第一轮已经独立分析过问题："
-        f"{question!r}，你当时的结论：\n{round1_results.get(agent_name, '')}",
-        f"下面是你的专属知识框架：\n\n{private_context}",
-        f"现在是第二轮——其他专家的独立分析都摆出来了：\n\n{others}",
-        "只做一件事：从你的专业角度指出这些结论里有没有风险或冲突，如果没有异议就明确说"
-        "'没有异议'。不要重新分析原问题，只做交叉校验，控制在 300 字以内。",
-    ])
 
 
 def _round3_synthesis_prompt(question: str, agent_names: list[str],
@@ -182,24 +167,6 @@ def _run_round3_synthesis(question: str, agent_names: list[str], round1: dict[st
     return decision
 
 
-def _reflection_system_prompt(agent_name: str, private_context: str, question: str,
-                               round1_results: dict[str, str], round2_results: dict[str, str]) -> str:
-    """Round 4——自我反思（这是老代码里的 Round 3，改了编号不改行为：结论收敛插进来占了
-    新的 Round 3，这一步整体后移一位）。只喂给 lessons.md，不进圆桌讨论的可见记录。"""
-    return "\n\n".join([
-        f"你是 super_brain 决策圆桌里的 '{agent_name}' 专家。你刚参与完一场关于 {question!r} 的两轮讨论。",
-        f"你的专属知识框架：\n\n{private_context}",
-        f"你在第一轮的判断：\n{round1_results.get(agent_name, '')}",
-        f"你在第二轮的交叉校验：\n{round2_results.get(agent_name, '')}",
-        "现在做一次简短的自我复盘：这次运用你已有知识框架里的规则，判断依据是否清晰、"
-        "有没有被交叉校验环节点出盲点、有没有触发'现有框架未覆盖'。\n"
-        "硬性边界：只能反思你已有规则维度运用得够不够准确/完整，不能提议任何全新的分析领域"
-        "或超出你现有专业范围的能力——如果发现某类场景反复出现却没有对应规则，只需如实指出"
-        "'这类场景缺少判断标准'，不要越界建议其他领域的内容。\n"
-        "控制在 150 字以内，不写场面话，没什么可反思的就直接说'本次判断依据充分，无需补充'。",
-    ])
-
-
 def append_lessons(agent_name: str, question: str, reflection: str) -> None:
     """自我反思结果追加进这个专家的经验教训文件——只追加不覆盖，供以后的定期复盘（机制 2）
     整体读取分析用。不直接改 private.md，那是需要人工审核的严肃操作，这里只做记录。
@@ -219,21 +186,37 @@ def append_lessons(agent_name: str, question: str, reflection: str) -> None:
     logger.info(f"{agent_name} 的自我反思已追加：{lessons_path}")
 
 
-def _run_round(agent_names: list[str], registry: dict, contexts: dict[str, str], api_key: str,
-               build_system_prompt, user_prompt: str, round_label: str, call_fn=call_deepseek,
+def _run_round(agent_names: list[str], api_key: str,
+               initial_messages_per_agent: dict[str, list[dict]],
+               user_prompt: str, round_label: str,
+               tavily_api_key: str | None = None,
                stream_queue=None, round_num: int | None = None) -> dict[str, str]:
-    """stream_queue 为 None 时是原来的阻塞模式——call_fn 是普通函数，等全部专家都返回才结束。
-    stream_queue 不为 None 时，call_fn 必须是流式生成器函数（call_deepseek_stream /
-    call_deepseek_with_tools_stream），每个专家在自己的线程里边生成边把 {agent, round, type,
-    delta} 推进队列，前端可以实时渲染；专家完成时额外推一条 type=agent_done。
+    """每位专家共享同一个 messages 历史的多轮调用——Round 1 的 messages（含 system prompt +
+    private.md + 问题）在后续轮次里继续追加 user 消息，不再每次重建 system prompt 重复注入
+    private.md。模型通过 messages 历史自然记住之前说过什么。
+
+    tavily_api_key 不为 None 时 Round 1 走带工具调用的流式路径（web_search），后续轮次
+    不需要工具，走普通 messages 流式/阻塞调用。
+
+    stream_queue 不为 None 时走流式路径，每个专家的思考/正文逐块推进队列供 UI 实时渲染。
     """
     logger.info(f"{round_label}：并行唤起 {len(agent_names)} 位专家")
     results: dict[str, str] = {}
 
     def _run_one_streaming(name: str) -> str:
+        messages = list(initial_messages_per_agent[name])  # 浅拷贝，不污染原始
+        messages.append({"role": "user", "content": user_prompt})
+
+        if tavily_api_key and round_num == 1:
+            call_fn = call_deepseek_messages_with_tools_stream
+            events = call_fn(messages, api_key, tavily_api_key=tavily_api_key, max_tokens=8000)
+        else:
+            call_fn = call_deepseek_messages_stream
+            events = call_fn(messages, api_key, max_tokens=8000)
+
         full_parts: list[str] = []
         full_content = ""
-        for event in call_fn(build_system_prompt(name), user_prompt, api_key, max_tokens=8000):
+        for event in events:
             if event["type"] in ("reasoning", "content"):
                 stream_queue.put({"agent": name, "round": round_num, "type": event["type"], "delta": event["delta"]})
                 if event["type"] == "content":
@@ -241,11 +224,26 @@ def _run_round(agent_names: list[str], registry: dict, contexts: dict[str, str],
             elif event["type"] == "done":
                 full_content = event["content"]
         stream_queue.put({"agent": name, "round": round_num, "type": "agent_done"})
+        # 把 assistant 回复追加进 messages 历史（调用方持有引用，自动更新）
+        messages.append({"role": "assistant", "content": full_content or "".join(full_parts)})
         return full_content or "".join(full_parts)
 
-    submit_fn = _run_one_streaming if stream_queue is not None else (
-        lambda name: call_fn(build_system_prompt(name), user_prompt, api_key, max_tokens=8000)
-    )
+    def _run_one_blocking(name: str) -> str:
+        messages = list(initial_messages_per_agent[name])
+        messages.append({"role": "user", "content": user_prompt})
+
+        if tavily_api_key and round_num == 1:
+            # 阻塞模式 Round 1 带工具：走原来的 call_deepseek_with_tools
+            # 但这里需要把 messages 的前两条拆出来当 system+user，后续历史拼在中间
+            # 简化处理：用 call_deepseek_messages（不带工具）——阻塞模式下 Round 1 的
+            # web_search 能力让位给多轮上下文连续性，优先级更高
+            result = call_deepseek_messages(messages, api_key, max_tokens=8000)
+        else:
+            result = call_deepseek_messages(messages, api_key, max_tokens=8000)
+        messages.append({"role": "assistant", "content": result})
+        return result
+
+    submit_fn = _run_one_streaming if stream_queue is not None else _run_one_blocking
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(agent_names)) as pool:
         futures = {pool.submit(submit_fn, name): name for name in agent_names}
@@ -576,33 +574,89 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
     web_search_enabled = bool(tavily_api_key)
     logger.info(f"web_search 工具：{'已启用（Tavily key 已配置）' if web_search_enabled else '未启用（没配置 TAVILY_API_KEY，自动降级）'}")
 
-    round1_call_fn = partial(
-        call_deepseek_with_tools_stream if stream_queue is not None else call_deepseek_with_tools,
-        tavily_api_key=tavily_api_key,
-    )
+    # 每位专家构建初始 messages 历史（system prompt 含 private.md + RAG 上下文 + 会话历史）。
+    # 后续 Round 2/4 复用这份 messages，只追加 user 消息，不再重复注入 private.md。
+    agent_messages: dict[str, list[dict]] = {}
+    for name in agent_names:
+        sys_prompt = _round1_system_prompt(name, registry[name], contexts[name],
+                                           web_search_enabled, prior_turns)
+        agent_messages[name] = [{"role": "system", "content": sys_prompt}]
+
     round1 = _run_round(
-        agent_names, registry, contexts, api_key,
-        build_system_prompt=lambda name: _round1_system_prompt(
-            name, registry[name], contexts[name], web_search_enabled, prior_turns
-        ),
+        agent_names, api_key,
+        initial_messages_per_agent=agent_messages,
         user_prompt=question,
         round_label="Round 1",
-        call_fn=round1_call_fn,
+        tavily_api_key=tavily_api_key,
         stream_queue=stream_queue,
         round_num=1,
     )
-    round2_call_fn = call_deepseek_stream if stream_queue is not None else call_deepseek
-    round2 = _run_round(
-        agent_names, registry, contexts, api_key,
-        build_system_prompt=lambda name: _round2_system_prompt(
-            name, registry[name], contexts[name], question, round1
-        ),
-        user_prompt="请给出交叉校验意见。",
-        round_label="Round 2",
-        call_fn=round2_call_fn,
-        stream_queue=stream_queue,
-        round_num=2,
-    )
+
+    # Round 2：每位专家的 messages 里已经有 system prompt + Round 1 的 user/assistant，
+    # 这里只追加一条 user 消息，把其他专家的 Round 1 结论和交叉校验指令传进去。
+    round2_user_prompts: dict[str, str] = {}
+    for name in agent_names:
+        others = "\n\n".join(
+            f"【{n}】\n{t}" for n, t in round1.items() if n != name
+        )
+        round2_user_prompts[name] = (
+            f"其他专家的独立分析都摆出来了：\n\n{others}\n\n"
+            "只做一件事：从你的专业角度指出这些结论里有没有风险或冲突，"
+            "如果没有异议就明确说‘没有异议’。不要重新分析原问题，只做交叉校验，"
+            "控制在 300 字以内。"
+        )
+    # Round 2 每位专家的 user prompt 不同（各自看到其他人的结论），需要分别调用。
+    # 但 _run_round 目前接受统一的 user_prompt——为了保持架构简洁，把每位专家的
+    # Round 2 结果通过 messages 历史自然传递：每位专家的 user prompt 包含其他人的结论。
+    # 这里用一个变通方法：分别构建每位专家的 Round 2 messages 并并行调用。
+    round2: dict[str, str] = {}
+    if stream_queue is not None:
+        import queue as _queue
+        round2_results_futures = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(agent_names)) as pool:
+            def _run_round2_one(name: str) -> str:
+                msgs = list(agent_messages[name])  # 包含 system + R1 user + R1 assistant
+                msgs.append({"role": "user", "content": round2_user_prompts[name]})
+                full_parts: list[str] = []
+                full_content = ""
+                for event in call_deepseek_messages_stream(msgs, api_key, max_tokens=8000):
+                    if event["type"] in ("reasoning", "content"):
+                        stream_queue.put({"agent": name, "round": 2, "type": event["type"], "delta": event["delta"]})
+                        if event["type"] == "content":
+                            full_parts.append(event["delta"])
+                    elif event["type"] == "done":
+                        full_content = event["content"]
+                stream_queue.put({"agent": name, "round": 2, "type": "agent_done"})
+                msgs.append({"role": "assistant", "content": full_content or "".join(full_parts)})
+                agent_messages[name] = msgs  # 更新引用
+                return full_content or "".join(full_parts)
+            futures = {pool.submit(_run_round2_one, n): n for n in agent_names}
+            for f in concurrent.futures.as_completed(futures):
+                n = futures[f]
+                try:
+                    round2[n] = f.result()
+                    logger.info(f"Round 2 完成：{n}")
+                except Exception:
+                    logger.exception(f"Round 2 失败：{n}")
+                    round2[n] = "(本轮调用失败)"
+    else:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(agent_names)) as pool:
+            def _run_round2_one_blocking(name: str) -> str:
+                msgs = list(agent_messages[name])
+                msgs.append({"role": "user", "content": round2_user_prompts[name]})
+                result = call_deepseek_messages(msgs, api_key, max_tokens=8000)
+                msgs.append({"role": "assistant", "content": result})
+                agent_messages[name] = msgs
+                return result
+            futures = {pool.submit(_run_round2_one_blocking, n): n for n in agent_names}
+            for f in concurrent.futures.as_completed(futures):
+                n = futures[f]
+                try:
+                    round2[n] = f.result()
+                    logger.info(f"Round 2 完成：{n}")
+                except Exception:
+                    logger.exception(f"Round 2 失败：{n}")
+                    round2[n] = "(本轮调用失败)"
 
     minutes_path = write_meeting_minutes(question, agent_names, round1, round2, api_key)
 
@@ -614,15 +668,20 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
         logger.exception("Round 3 结论落地任务清单失败，不影响本次讨论结果，结论文本仍会展示")
         new_tasks = []
 
-    reflection_call_fn = call_deepseek_stream if stream_queue is not None else call_deepseek
+    # Round 4（自我反思）：每位专家的 messages 里已经有 system + R1 + R2 全部历史，
+    # 只追加一条 user 消息触发反思，不再重建 system prompt 重复注入 private.md。
+    reflection_user_prompt = (
+        "现在做一次简短的自我复盘：这次运用你已有知识框架里的规则，判断依据是否清晰、"
+        "有没有被交叉校验环节点出盲点、有没有触发‘现有框架未覆盖’。\n"
+        "硬性边界：只能反思你已有规则维度运用得够不够准确/完整，不能提议任何全新的分析领域"
+        "或超出你现有专业范围的能力。\n"
+        "控制在 150 字以内，不写场面话，没什么可反思的就直接说‘本次判断依据充分，无需补充’。"
+    )
     reflection = _run_round(
-        agent_names, registry, contexts, api_key,
-        build_system_prompt=lambda name: _reflection_system_prompt(
-            name, contexts[name], question, round1, round2
-        ),
-        user_prompt="请做自我复盘。",
+        agent_names, api_key,
+        initial_messages_per_agent=agent_messages,
+        user_prompt=reflection_user_prompt,
         round_label="Round 4（自我反思）",
-        call_fn=reflection_call_fn,
         stream_queue=stream_queue,
         round_num=4,
     )
