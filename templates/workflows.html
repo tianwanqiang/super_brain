@@ -59,7 +59,7 @@
 
 {% if msg %}<div class="banner banner-ok">{{ msg }}</div>{% endif %}
 {% if error %}<div class="banner banner-err">{{ error }}</div>{% endif %}
-<div id="job-banner" class="banner banner-ok" style="display:{% if job.active %}block{% else %}none{% endif %};">
+<div id="job-banner" class="banner banner-ok" style="display:{% if job.active or job.msg or job.error %}block{% else %}none{% endif %};">
   {% if job.active %}⏳ 正在执行：{{ job.label }}，请稍候…{% elif job.msg %}{{ job.msg }}{% elif job.error %}{{ job.error }}{% endif %}
 </div>
 
@@ -253,6 +253,7 @@
 (function () {
   var banner = document.getElementById('job-banner');
   var STATUS_URL = "{{ url_for('workflows_status') }}";
+  var wasActive = {{ 'true' if job.active else 'false' }};  // 页面加载时的状态，避免误触发刷新
 
   function setButtons(disabled) {
     document.querySelectorAll('button').forEach(function (b) {
@@ -271,21 +272,29 @@
     fetch(STATUS_URL).then(function (r) { return r.json(); }).then(function (s) {
       if (s.active) {
         show('⏳ 正在执行：' + s.label + '，请稍候…', false);
-        setButtons(true);                 // 执行期间禁用所有操作按钮，防重复点击
+        setButtons(true);                 // 执行期间禁用操作按钮，防重复点击
+        wasActive = true;
         setTimeout(poll, 1500);
       } else {
         setButtons(false);
-        if (s.msg) { show(s.msg, false); }
-        else if (s.error) { show(s.error, true); }
-        else { banner.style.display = 'none'; }
-        // 完成后刷新一次页面，把最新的步骤状态/产物渲染出来
-        if (s.msg || s.error) { setTimeout(function () { location.reload(); }, 1200); }
+        if (wasActive) {
+          // 只有"刚才还在执行、现在完成了"这一跳变才刷新一次，避免页面来回加载闪烁
+          if (s.msg) { show(s.msg, false); }
+          else if (s.error) { show(s.error, true); }
+          else { banner.style.display = 'none'; }
+          setTimeout(function () { location.reload(); }, 900);
+        } else if (s.msg) {
+          show(s.msg, false);             // 页面打开时已有结果：直接显示，不刷新
+        } else if (s.error) {
+          show(s.error, true);
+        } else {
+          banner.style.display = 'none';
+        }
       }
     }).catch(function () { setTimeout(poll, 2000); });
   }
 
   document.addEventListener('submit', function () {
-    // 提交那一刻就给反馈，并立刻锁按钮，避免"点了没反应又点一次"
     show('⏳ 已提交，正在执行，请稍候…', false);
     setButtons(true);
   });
