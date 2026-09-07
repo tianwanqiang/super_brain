@@ -1849,6 +1849,7 @@ def workflows_page():
         msg=session.pop("workflows_msg", None),
         error=session.pop("workflows_error", None),
         pill=_workflow_step_pill,
+        job=_workflow_job_snapshot(),
     )
 
 
@@ -1873,19 +1874,60 @@ def workflows_save():
     return redirect(url_for("workflows_page"))
 
 
-def _run_with_lock(fn, ok_msg):
-    if not _workflow_lock.acquire(blocking=False):
-        _workflow_msg_set(None, "已有工作流动作在执行，请稍等再试。")
-        return
-    try:
-        fn()
-        if ok_msg:
-            _workflow_msg_set(ok_msg)
-    except Exception as exc:
-        logger.exception("工作流操作失败")
-        _workflow_msg_set(None, f"操作失败：{exc}")
-    finally:
-        _workflow_lock.release()
+_workflow_job_active = False
+_workflow_job_label = ""
+_workflow_job_msg: str | None = None
+_workflow_job_error: str | None = None
+
+
+def _workflow_job_snapshot() -> dict:
+    with _state_lock:
+        return {
+            "active": _workflow_job_active,
+            "label": _workflow_job_label,
+            "msg": _workflow_job_msg,
+            "error": _workflow_job_error,
+        }
+
+
+def _start_workflow_action(label: str, fn, ok_msg: str | None):
+    """把耗时操作丢到后台线程，请求立刻返回；前端轮询 /admin/workflows/status 拿进度，
+    避免按钮点了没反应、用户重复点击。锁保证同一时间只有一个工作流动作在跑。"""
+    global _workflow_job_active, _workflow_job_label, _workflow_job_msg, _workflow_job_error
+    if _workflow_lock.locked():
+        with _state_lock:
+            _workflow_job_error = "已有工作流操作在执行，请稍候。"
+        return False
+
+    with _state_lock:
+        _workflow_job_active = True
+        _workflow_job_label = label
+        _workflow_job_msg = None
+        _workflow_job_error = None
+
+    def _worker():
+        global _workflow_job_active, _workflow_job_msg, _workflow_job_error
+        try:
+            with _workflow_lock:
+                fn()
+            with _state_lock:
+                _workflow_job_msg = ok_msg
+        except Exception as exc:
+            logger.exception("工作流操作失败")
+            with _state_lock:
+                _workflow_job_error = f"操作失败：{exc}"
+        finally:
+            with _state_lock:
+                _workflow_job_active = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return True
+
+
+@app.route("/admin/workflows/status")
+def workflows_status():
+    """前端轮询用：active=是否在执行、label=在做什么、msg/error=完成后要展示的结果。"""
+    return jsonify(_workflow_job_snapshot())
 
 
 @app.route("/admin/workflows/run/new", methods=["POST"])
@@ -1905,9 +1947,9 @@ def workflows_run_new():
             workflow_engine.save_run(run)  # 先留着空 run，方便之后补 key 重试
             raise ValueError(f"DeepSeek 未配置：{exc}")
         workflow_engine.advance(run["run_id"], api_key=api_key)
-        _workflow_msg_set(f"工作流已启动：{run['run_id']}。第一步已执行，去下面审批队列查看/通过。")
 
-    _run_with_lock(_do, None)
+    _start_workflow_action("启动一次工作流", _do,
+                           "工作流已启动，第一步已执行，去审批队列查看/通过。")
     return redirect(url_for("workflows_page"))
 
 
@@ -1925,17 +1967,18 @@ def workflows_step_approve(run_id, step_index):
             api_key = None  # 后续步骤没有需要 LLM 的就不用 key；需要时会在引擎里报错可重试
         workflow_engine.approve_step(run_id, step_index, note=note, approved_by="CEO",
                                      chosen_topic=chosen_topic)
-        _workflow_msg_set("审批通过，已自动推进下一步。")
 
-    _run_with_lock(_do, None)
+    _start_workflow_action("审批通过并推进下一步", _do, "审批通过，已自动推进下一步。")
     return redirect(url_for("workflows_page"))
 
 
 @app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/reject", methods=["POST"])
 def workflows_step_reject(run_id, step_index):
     reason = (request.form.get("reason") or "").strip()
-    _run_with_lock(lambda: workflow_engine.reject_step(run_id, step_index, reason=reason),
-                   "已打回，该 run 停止。可在该步上改参数后重试。")
+    _start_workflow_action(
+        "打回该步骤",
+        lambda: workflow_engine.reject_step(run_id, step_index, reason=reason),
+        "已打回，该 run 停止。可在该步上改参数后重试。")
     return redirect(url_for("workflows_page"))
 
 
@@ -1947,9 +1990,8 @@ def workflows_step_retry(run_id, step_index):
         except llm_client.DeepSeekConfigError:
             api_key = None
         workflow_engine.retry_step(run_id, step_index, api_key=api_key)
-        _workflow_msg_set("已重试该步骤。")
 
-    _run_with_lock(_do, None)
+    _start_workflow_action("重试该步骤", _do, "已重试该步骤。")
     return redirect(url_for("workflows_page"))
 
 
@@ -1962,9 +2004,8 @@ def workflows_step_redo(run_id, step_index):
         except llm_client.DeepSeekConfigError:
             api_key = None
         workflow_engine.redo_step(run_id, step_index, api_key=api_key)
-        _workflow_msg_set("已重新执行该步，等待审核。")
 
-    _run_with_lock(_do, None)
+    _start_workflow_action("重新执行该步骤", _do, "已重新执行该步，等待审核。")
     return redirect(url_for("workflows_page"))
 
 
@@ -1972,14 +2013,19 @@ def workflows_step_redo(run_id, step_index):
 def workflows_step_skip(run_id, step_index):
     """跳过该步继续（用于某步因额度/网络反复失败等）——跳过内容步骤=人工后续补，跳过 publish=不产生发布单。"""
     reason = (request.form.get("reason") or "").strip()
-    _run_with_lock(lambda: workflow_engine.skip_step(run_id, step_index, reason=reason),
-                   "已跳过该步，尝试继续推进。")
+    _start_workflow_action(
+        "跳过该步骤并继续",
+        lambda: workflow_engine.skip_step(run_id, step_index, reason=reason),
+        "已跳过该步，尝试继续推进。")
     return redirect(url_for("workflows_page"))
 
 
 @app.route("/admin/workflows/run/<run_id>/stop", methods=["POST"])
 def workflows_run_stop(run_id):
-    _run_with_lock(lambda: workflow_engine.stop_run(run_id, reason="CEO 手动停止"), "已停止该 run。")
+    _start_workflow_action(
+        "停止整个 run",
+        lambda: workflow_engine.stop_run(run_id, reason="CEO 手动停止"),
+        "已停止该 run。")
     return redirect(url_for("workflows_page"))
 
 

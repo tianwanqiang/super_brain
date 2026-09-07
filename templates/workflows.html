@@ -59,6 +59,9 @@
 
 {% if msg %}<div class="banner banner-ok">{{ msg }}</div>{% endif %}
 {% if error %}<div class="banner banner-err">{{ error }}</div>{% endif %}
+<div id="job-banner" class="banner banner-ok" style="display:{% if job.active %}block{% else %}none{% endif %};">
+  {% if job.active %}⏳ 正在执行：{{ job.label }}，请稍候…{% elif job.msg %}{{ job.msg }}{% elif job.error %}{{ job.error }}{% endif %}
+</div>
 
 <h2>① 工作流定义 · 定时 · 选题方向</h2>
 <div class="card">
@@ -246,5 +249,48 @@
 <p class="muted">还没有运行实例：点 ② 手动启动一次，或到 ① 打开某个工作流的定时等它到点。</p>
 {% endfor %}
 
+<script>
+(function () {
+  var banner = document.getElementById('job-banner');
+  var STATUS_URL = "{{ url_for('workflows_status') }}";
+
+  function setButtons(disabled) {
+    document.querySelectorAll('button').forEach(function (b) {
+      if (b.id === 'font-plus' || b.id === 'font-minus') { return; }  // 字体按钮不算操作
+      b.disabled = disabled;
+    });
+  }
+
+  function show(text, isError) {
+    banner.style.display = 'block';
+    banner.className = 'banner ' + (isError ? 'banner-err' : 'banner-ok');
+    banner.innerHTML = text;
+  }
+
+  function poll() {
+    fetch(STATUS_URL).then(function (r) { return r.json(); }).then(function (s) {
+      if (s.active) {
+        show('⏳ 正在执行：' + s.label + '，请稍候…', false);
+        setButtons(true);                 // 执行期间禁用所有操作按钮，防重复点击
+        setTimeout(poll, 1500);
+      } else {
+        setButtons(false);
+        if (s.msg) { show(s.msg, false); }
+        else if (s.error) { show(s.error, true); }
+        else { banner.style.display = 'none'; }
+        // 完成后刷新一次页面，把最新的步骤状态/产物渲染出来
+        if (s.msg || s.error) { setTimeout(function () { location.reload(); }, 1200); }
+      }
+    }).catch(function () { setTimeout(poll, 2000); });
+  }
+
+  document.addEventListener('submit', function () {
+    // 提交那一刻就给反馈，并立刻锁按钮，避免"点了没反应又点一次"
+    show('⏳ 已提交，正在执行，请稍候…', false);
+    setButtons(true);
+  });
+  document.addEventListener('DOMContentLoaded', poll);
+})();
+</script>
 </body>
 </html>
