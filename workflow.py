@@ -572,6 +572,45 @@ def stop_run(run_id: str, reason: str = "") -> dict:
     return run
 
 
+def delete_run(run_id: str) -> bool:
+    """删除一个运行实例（连同其分步产物/审批记录一起从磁盘移除）。"""
+    path = _run_path(run_id)
+    if not path.exists():
+        return False
+    path.unlink()
+    logger.info(f"运行实例已删除：{run_id}")
+    return True
+
+
+def rerun_run(run_id: str) -> dict:
+    """按旧运行的选题/方向/素材，开一个全新的 run（复用输入，状态从头开始）。
+    返回新 run，不自动推进（调用方决定何时 advance，通常紧接着 advance）。"""
+    old = load_run(run_id)
+    if old is None:
+        raise ValueError(f"运行实例不存在：{run_id}")
+    return create_run(
+        old.get("workflow_id", DEFAULT_WORKFLOW_ID),
+        topic=old.get("topic", ""),
+        source_text=old.get("source_text", ""),
+        direction=old.get("direction", ""),
+    )
+
+
+def edit_run_fields(run_id: str, topic: str | None = None, direction: str | None = None) -> dict:
+    """人工临时修改 run 的选题/方向（不重启，只覆盖输入字段；已产出的步骤保留）。"""
+    run = load_run(run_id)
+    if run is None:
+        raise ValueError(f"运行实例不存在：{run_id}")
+    if topic is not None:
+        run["topic"] = topic.strip()
+        _append_history(run, f"人工修改选题为：{run['topic']}")
+    if direction is not None:
+        run["direction"] = direction.strip()
+        _append_history(run, f"人工修改方向预设为：{run['direction']}")
+    save_run(run)
+    return run
+
+
 # ---------- 调度（定时：到点先跑第一步，等审批再往下） ----------
 
 def scheduler_tick(now: datetime | None = None) -> list[str]:

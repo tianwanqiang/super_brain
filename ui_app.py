@@ -2029,6 +2029,55 @@ def workflows_run_stop(run_id):
     return redirect(url_for("workflows_page"))
 
 
+@app.route("/admin/workflows/run/<run_id>/delete", methods=["POST"])
+def workflows_run_delete(run_id):
+    """删除运行实例（含其分步产物/审批记录）。"""
+    try:
+        workflow_engine.delete_run(run_id)
+        session["workflows_msg"] = "该运行已删除。"
+    except Exception as exc:
+        logger.exception("删除运行实例失败")
+        session["workflows_error"] = f"删除失败：{exc}"
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/rerun", methods=["POST"])
+def workflows_run_rerun(run_id):
+    """按旧运行的选题/方向/素材开一个新 run 并立即推进（重跑）。"""
+    def _do():
+        new_run = workflow_engine.rerun_run(run_id)
+        try:
+            api_key = llm_client.load_deepseek_api_key()
+        except llm_client.DeepSeekConfigError as exc:
+            workflow_engine.save_run(new_run)
+            raise ValueError(f"DeepSeek 未配置：{exc}")
+        workflow_engine.advance(new_run["run_id"], api_key=api_key)
+
+    _start_workflow_action("重跑该工作流", _do, "已按原输入开新运行并推进第一步。")
+    return redirect(url_for("workflows_page"))
+
+
+@app.route("/admin/workflows/run/<run_id>/edit", methods=["POST"])
+def workflows_run_edit(run_id):
+    """人工临时修改运行选题/方向（不重启）。"""
+    topic = (request.form.get("topic") or "").strip()
+    direction = (request.form.get("direction") or "").strip()
+    if not topic and not direction:
+        session["workflows_error"] = "没有可修改的内容（选题/方向都为空）。"
+        return redirect(url_for("workflows_page"))
+    try:
+        workflow_engine.edit_run_fields(
+            run_id,
+            topic=topic or None,
+            direction=direction or None,
+        )
+        session["workflows_msg"] = "已人工修改该运行的选题/方向。"
+    except Exception as exc:
+        logger.exception("人工修改运行失败")
+        session["workflows_error"] = f"修改失败：{exc}"
+    return redirect(url_for("workflows_page"))
+
+
 # pytest 会自动设置 PYTEST_CURRENT_TEST 这个环境变量——测试文件 import ui_app 时必须
 # 跳过这一步，否则会启动一个真实的后台线程，一旦测试恰好在过了本机 18 点之后运行，
 # 会触发真实的、要花钱的 DeepSeek 批量调用，不是测试应该产生的副作用。正常运行（gunicorn/

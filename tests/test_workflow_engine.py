@@ -189,6 +189,35 @@ def test_step_failure_marks_failed_then_retry_recovers(env, monkeypatch):
     assert _step(r, "research")["status"] == wf.ST_AWAITING
 
 
+def test_delete_run_removes_record(env):
+    _write_config(env, {})
+    run = wf.create_run(wf.DEFAULT_WORKFLOW_ID, topic="待删")
+    assert wf.load_run(run["run_id"]) is not None
+    assert wf.delete_run(run["run_id"]) is True
+    assert wf.load_run(run["run_id"]) is None
+    assert wf.delete_run(run["run_id"]) is False   # 已删，再删返回 False
+
+
+def test_rerun_run_reuses_inputs(env):
+    _write_config(env, {})
+    old = wf.create_run(wf.DEFAULT_WORKFLOW_ID, topic="旧选题", direction="旧方向")
+    new = wf.rerun_run(old["run_id"])
+    assert new["run_id"] != old["run_id"]
+    assert new["topic"] == "旧选题" and new["direction"] == "旧方向"
+    # 复用了选题 → 选题提案这一步按约定跳过，其余步骤回到 pending（状态从头开始）
+    assert [s["status"] for s in new["steps"] if s["id"] != "topics"] == \
+           [wf.ST_PENDING] * (len(new["steps"]) - 1)
+
+
+def test_edit_run_fields_overrides_topic_and_direction(env):
+    _write_config(env, {})
+    run = wf.create_run(wf.DEFAULT_WORKFLOW_ID, topic="原选题")
+    wf.edit_run_fields(run["run_id"], topic="新选题", direction="新方向")
+    r = wf.load_run(run["run_id"])
+    assert r["topic"] == "新选题" and r["direction"] == "新方向"
+    assert any("修改选题" in h["message"] for h in r["history"])
+
+
 def test_advance_with_fake_handlers_needs_no_deepseek_key(env, monkeypatch):
     """回归（CI Linux fresh checkout 无 config.json）：假处理器测试推进流程时，
     引擎绝不应该主动去加载 DeepSeek key（否则没 key 就 ValueError 崩掉）。"""
