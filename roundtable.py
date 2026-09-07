@@ -89,8 +89,10 @@ def _round1_system_prompt(agent_name: str, entry: dict, private_context: str,
             "不需要强行关联，独立判断优先。"
         )
     parts.append(
-        "这是第一轮，你看不到其他专家这次的意见，独立给出你的分析，给一个明确的倾向性判断"
-        "（做/不做/有条件地做），不要模棱两可，控制在 400 字以内。"
+        "这是第一轮，你看不到其他专家这次的意见，独立给出你的分析。"
+        "开头第一句必须明确表态：'建议做'或'建议不做'，二选一，不允许骑墙。"
+        "如果有前提条件，在表态之后单独说明（比如'建议做，但需要先满足XX条件'）。"
+        "不要说'有条件地做'这种模糊表述。控制在 400 字以内。"
     )
     return "\n\n".join(parts)
 
@@ -113,7 +115,7 @@ def _round3_synthesis_prompt(question: str, agent_names: list[str],
         f"Round 2（交叉校验）：\n{round2_text}",
         "请只输出一个 JSON 对象，不要任何 JSON 之外的文字、不要 markdown 代码块包裹，"
         "结构如下：\n"
-        '{"decision": "一句话说清楚最终决策是什么（做/不做/有条件地做）", '
+        '{"decision": "一句话说清楚最终决策：建议做 / 建议不做，二选一。如果有前提条件就附在后面（如：建议做，但需先满足XX）", '
         '"rationale": "决策依据，明确指出主要采纳了哪位专家的哪条判断，冲突点怎么取舍的", '
         '"steps": [{"description": "具体可执行的步骤，不能是空话", '
         '"assignee_agent": "对应的执行 agent 名字（如 writer/toutiao/ship/video-prompt），'
