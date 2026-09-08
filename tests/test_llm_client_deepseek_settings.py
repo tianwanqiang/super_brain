@@ -111,7 +111,7 @@ def test_call_deepseek_explicit_argument_wins_over_config(fake_config_path, monk
 
     captured = {}
 
-    def fake_core(messages, api_key, model, base_url, max_tokens):
+    def fake_core(messages, api_key, model, base_url, max_tokens, context=""):
         captured["model"] = model
         captured["max_tokens"] = max_tokens
         return "ok"
@@ -128,7 +128,7 @@ def test_call_deepseek_falls_back_to_config_when_not_passed(fake_config_path, mo
 
     captured = {}
 
-    def fake_core(messages, api_key, model, base_url, max_tokens):
+    def fake_core(messages, api_key, model, base_url, max_tokens, context=""):
         captured["model"] = model
         captured["max_tokens"] = max_tokens
         return "ok"

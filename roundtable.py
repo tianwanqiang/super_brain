@@ -134,7 +134,8 @@ def _run_round3_synthesis(question: str, agent_names: list[str], round1: dict[st
     prompt = _round3_synthesis_prompt(question, agent_names, round1, round2)
     if stream_queue is not None:
         full_parts: list[str] = []
-        for event in call_deepseek_stream(prompt, "请输出收敛结论。", api_key, max_tokens=8000):
+        for event in call_deepseek_stream(prompt, "请输出收敛结论。", api_key, max_tokens=8000,
+                                          context="圆桌-Round3-结论收敛"):
             if event["type"] in ("reasoning", "content"):
                 stream_queue.put({"agent": "synthesis", "round": 3, "type": event["type"], "delta": event["delta"]})
                 if event["type"] == "content":
@@ -145,7 +146,8 @@ def _run_round3_synthesis(question: str, agent_names: list[str], round1: dict[st
         raw = "".join(full_parts)
     else:
         try:
-            raw = call_deepseek(prompt, "请输出收敛结论。", api_key, max_tokens=8000)
+            raw = call_deepseek(prompt, "请输出收敛结论。", api_key, max_tokens=8000,
+                                context="圆桌-Round3-结论收敛")
         except Exception:
             logger.exception("Round 3 结论收敛调用失败")
             return {"decision": "（结论收敛调用失败，详情看日志，原始 Round 1/2 记录仍保留在上面）",
@@ -208,13 +210,14 @@ def _run_round(agent_names: list[str], api_key: str,
     def _run_one_streaming(name: str) -> str:
         messages = list(initial_messages_per_agent[name])
         messages.append({"role": "user", "content": user_prompt})
+        ctx = f"圆桌-Round{round_num}-{name}"
 
         if tavily_api_key and round_num == 1:
             call_fn = call_deepseek_messages_with_tools_stream
-            events = call_fn(messages, api_key, tavily_api_key=tavily_api_key, max_tokens=8000)
+            events = call_fn(messages, api_key, tavily_api_key=tavily_api_key, max_tokens=8000, context=ctx)
         else:
             call_fn = call_deepseek_messages_stream
-            events = call_fn(messages, api_key, max_tokens=8000)
+            events = call_fn(messages, api_key, max_tokens=8000, context=ctx)
 
         full_parts: list[str] = []
         full_content = ""
@@ -234,11 +237,12 @@ def _run_round(agent_names: list[str], api_key: str,
     def _run_one_blocking(name: str) -> str:
         messages = list(initial_messages_per_agent[name])
         messages.append({"role": "user", "content": user_prompt})
+        ctx = f"圆桌-Round{round_num}-{name}"
 
         if tavily_api_key and round_num == 1:
-            result = call_deepseek_messages(messages, api_key, max_tokens=8000)
+            result = call_deepseek_messages(messages, api_key, max_tokens=8000, context=ctx)
         else:
-            result = call_deepseek_messages(messages, api_key, max_tokens=8000)
+            result = call_deepseek_messages(messages, api_key, max_tokens=8000, context=ctx)
         messages.append({"role": "assistant", "content": result})
         initial_messages_per_agent[name] = messages
         return result
@@ -292,7 +296,8 @@ def write_meeting_minutes(question: str, agent_names: list[str],
     )
     logger.info("调用 writer 生成正式会议纪要")
     try:
-        raw = call_deepseek(system_prompt, "请生成会议纪要。", api_key, max_tokens=10000)
+        raw = call_deepseek(system_prompt, "请生成会议纪要。", api_key, max_tokens=10000,
+                            context="圆桌-会议纪要生成")
     except Exception:
         logger.exception("writer 生成会议纪要失败，原始记录仍然保留在返回值里，只是没有落盘")
         return None
@@ -424,7 +429,8 @@ def ask_agent_mention(conversation_id: str, agent_name: str, message: str) -> di
     system_prompt = _mention_system_prompt(agent_name, entry, private_context, conversation, message)
     logger.info(f"@ 单独提问：会话={conversation_id}, 专家={agent_name}, 问题={message!r}")
     try:
-        answer = call_deepseek(system_prompt, message, api_key, max_tokens=1500)
+        answer = call_deepseek(system_prompt, message, api_key, max_tokens=1500,
+                               context=f"圆桌-@{agent_name}")
     except Exception:
         logger.exception(f"@ {agent_name} 单独提问失败")
         raise

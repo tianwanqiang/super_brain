@@ -70,7 +70,7 @@ def generate_content_brief(content: str, api_key: str, user_instruction: str | N
     logger.info("调用 content-strategist 生成策划简报")
     brief = call_deepseek(
         system_prompt, _apply_user_instruction(content, user_instruction), api_key,
-        max_tokens=3500, **_structured_model_kwargs(),
+        max_tokens=3500, context="executors-策划简报", **_structured_model_kwargs(),
     )
     log_execution("content-strategist", "生成策划简报", f"素材长度={len(content)}字")
     return brief
@@ -104,6 +104,7 @@ def generate_writer_draft(content: str, api_key: str, user_instruction: str | No
     )
     return call_deepseek(
         system_prompt, _apply_user_instruction(content, user_instruction), api_key, max_tokens=8000,
+        context="executors-成品草稿",
     )
 
 
@@ -130,7 +131,7 @@ def adapt_draft_to_toutiao(draft: str, api_key: str) -> str:
         "## 建议分类\n给出一个最贴合的头条号内容分类（如：职场、科技、创业、AI、数码等）。"
     )
     return call_deepseek(system_prompt, draft, api_key, max_tokens=12000,
-                         **_structured_model_kwargs())
+                         context="executors-头条排版", **_structured_model_kwargs())
 
 
 def adapt_draft_to_wechat(draft: str, api_key: str) -> tuple[str, str]:
@@ -152,7 +153,7 @@ def adapt_draft_to_wechat(draft: str, api_key: str) -> tuple[str, str]:
         "不要输出除此之外的任何解释文字。"
     )
     raw = call_deepseek(system_prompt, draft, api_key, max_tokens=12000,
-                        **_structured_model_kwargs())
+                        context="executors-公众号排版", **_structured_model_kwargs())
     parts = raw.strip().split("\n", 2)
     title = parts[0].strip().lstrip("#").strip()
     html = parts[-1].strip() if len(parts) > 1 else ""

@@ -230,7 +230,8 @@ def _handle_topics(ctx: dict) -> dict:
         except llm_client.DeepSeekConfigError as exc:
             raise ValueError(f"DeepSeek 未配置：{exc}") from exc
     raw = llm_client.call_deepseek(system_prompt, user_prompt, api_key, max_tokens=3000,
-                                   model=llm_client.structured_model_override())
+                                   model=llm_client.structured_model_override(),
+                                   context="工作流-选题生成")
     candidates = []
     for line in raw.splitlines():
         line = line.strip()

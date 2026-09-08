@@ -129,7 +129,8 @@ WEB_SEARCH_TOOL_SCHEMA = {
 }
 
 
-def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url: str, max_tokens: int) -> str:
+def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url: str, max_tokens: int,
+                        context: str = "") -> str:
     body = json.dumps({"model": model, "max_tokens": max_tokens, "messages": messages}).encode("utf-8")
     req = urllib.request.Request(
         f"{base_url}/chat/completions",
@@ -137,13 +138,14 @@ def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    logger.debug(f"DeepSeek 请求 -> model={model}, max_tokens={max_tokens}, messages数={len(messages)}")
+    ctx = f"[{context}] " if context else ""
+    logger.debug(f"{ctx}DeepSeek 请求 -> model={model}, max_tokens={max_tokens}, messages数={len(messages)}")
     try:
         with urllib.request.urlopen(req, timeout=90) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        logger.error(f"DeepSeek 调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        logger.error(f"{ctx}DeepSeek 调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
         raise
 
     usage = data.get("usage", {})
@@ -154,53 +156,56 @@ def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url
     reasoning_content = message.get("reasoning_content", "")
 
     logger.info(
-        f"DeepSeek 调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"{ctx}DeepSeek 调用完成 -> model={model}, finish_reason={finish_reason}, "
         f"prompt_tokens={usage.get('prompt_tokens')}, "
         f"reasoning_tokens={usage.get('completion_tokens_details', {}).get('reasoning_tokens', 0)}, "
         f"completion_tokens={usage.get('completion_tokens')}, total_tokens={usage.get('total_tokens')}"
     )
     if not content:
         logger.warning(
-            f"DeepSeek 返回的 content 是空的！finish_reason={finish_reason}，很可能是 max_tokens "
+            f"{ctx}DeepSeek 返回的 content 是空的！finish_reason={finish_reason}，很可能是 max_tokens "
             f"不够、被截断在思考阶段。reasoning_content 摘要：{reasoning_content[:200]!r}"
         )
-    logger.debug(f"DeepSeek 响应 content：\n{content}")
+    logger.debug(f"{ctx}DeepSeek 响应 content：\n{content}")
     return content
 
 
 def call_deepseek(system_prompt: str, user_prompt: str, api_key: str,
                    model: str | None = None, base_url: str | None = None,
-                   max_tokens: int | None = None) -> str:
+                   max_tokens: int | None = None, context: str = "") -> str:
     """model/base_url/max_tokens 不传（或传 None）时，从 config.json 的 Model/BaseUrl/
     MaxTokens 三个可选字段读（见 load_deepseek_settings()）；显式传参数的调用方（比如
     某些场景需要更小/更大的 max_tokens）优先级更高，配置值不会覆盖显式传入的值。
+    context: 调用上下文描述，用于日志（如 "圆桌-Round1-营销专家"、"executors-公众号排版"）。
     """
     settings = load_deepseek_settings()
     return _call_deepseek_core(
         [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
         api_key, model or settings["model"], base_url or settings["base_url"],
-        max_tokens or settings["max_tokens"],
+        max_tokens or settings["max_tokens"], context,
     )
 
 
 def call_deepseek_messages(messages: list[dict], api_key: str,
                             model: str | None = None, base_url: str | None = None,
-                            max_tokens: int | None = None) -> str:
+                            max_tokens: int | None = None, context: str = "") -> str:
     """跟 call_deepseek 逻辑一致，只是直接接受完整的 messages 数组——多轮对话场景用
     （比如 video-prompt 的迭代修改），不是每次都只有一组 system+user。model/base_url/
     max_tokens 的配置覆盖规则跟 call_deepseek 一致。
+    context: 调用上下文描述，用于日志。
     """
     settings = load_deepseek_settings()
     return _call_deepseek_core(
         messages, api_key, model or settings["model"], base_url or settings["base_url"],
-        max_tokens or settings["max_tokens"],
+        max_tokens or settings["max_tokens"], context,
     )
 
 
 def call_deepseek_messages_stream(messages: list[dict], api_key: str,
                                    model: str | None = None, base_url: str | None = None,
                                    max_tokens: int | None = None,
-                                   tools: list[dict] | None = None):
+                                   tools: list[dict] | None = None,
+                                   context: str = ""):
     """call_deepseek_messages 的流式版本——接受完整的 messages 数组（多轮对话），同时支持
     可选的 tools（function calling）。用于圆桌讨论的 Round 1（带 web_search 工具 + 多轮
     上下文延续）。
@@ -209,6 +214,8 @@ def call_deepseek_messages_stream(messages: list[dict], api_key: str,
     任意长度的 messages 数组（有状态，支持多轮上下文延续）。
     跟 call_deepseek_with_tools_stream 的区别：后者也只接受 system+user，这里接受完整
     messages 历史。
+
+    context: 调用上下文描述，用于日志。
 
     yield {"type": "reasoning"|"content", "delta": str}，最后 yield {"type": "done", "content": 完整正文}。
     """
@@ -230,8 +237,9 @@ def call_deepseek_messages_stream(messages: list[dict], api_key: str,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
+    ctx = f"[{context}] " if context else ""
     logger.debug(
-        f"DeepSeek messages 流式请求 -> model={model}, max_tokens={max_tokens}, "
+        f"{ctx}DeepSeek messages 流式请求 -> model={model}, max_tokens={max_tokens}, "
         f"messages数={len(messages)}, tools={'有' if tools else '无'}"
     )
 
@@ -264,17 +272,17 @@ def call_deepseek_messages_stream(messages: list[dict], api_key: str,
                     yield {"type": "content", "delta": content_delta}
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        logger.error(f"DeepSeek messages 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        logger.error(f"{ctx}DeepSeek messages 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
         raise
 
     full_content = "".join(full_content_parts).strip()
     logger.info(
-        f"DeepSeek messages 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"{ctx}DeepSeek messages 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
         f"content_chars={len(full_content)}, reasoning_chars={len(''.join(full_reasoning_parts))}"
     )
     if not full_content:
         logger.warning(
-            f"DeepSeek messages 流式返回的 content 是空的！finish_reason={finish_reason}，"
+            f"{ctx}DeepSeek messages 流式返回的 content 是空的！finish_reason={finish_reason}，"
             f"很可能是 max_tokens 不够、被截断在思考阶段。"
         )
     yield {"type": "done", "content": full_content}
@@ -285,12 +293,15 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
                                               model: str | None = None,
                                               base_url: str | None = None,
                                               max_tokens: int | None = None,
-                                              max_tool_rounds: int = 3):
+                                              max_tool_rounds: int = 3,
+                                              context: str = ""):
     """call_deepseek_with_tools_stream 的多轮版本——接受完整的 messages 历史，同时支持
     web_search 工具调用循环。用于圆桌讨论 Round 1（专家需要 web_search + 多轮上下文延续）。
 
     跟 call_deepseek_with_tools_stream 的区别：后者只接受 system+user 两条消息，这里
     接受任意长度的 messages 数组，工具调用结果追加进 messages 后继续对话。
+
+    context: 调用上下文描述，用于日志。
 
     yield {"type": "reasoning"|"content", "delta": str}，最后 yield {"type": "done", "content": 完整正文}。
     """
@@ -299,6 +310,7 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
     base_url = base_url or settings["base_url"]
     max_tokens = max_tokens or settings["max_tokens"]
     tools = [WEB_SEARCH_TOOL_SCHEMA] if tavily_api_key else None
+    ctx = f"[{context}] " if context else ""
 
     for round_num in range(max_tool_rounds + 1):
         body: dict = {"model": model, "max_tokens": max_tokens, "stream": True, "messages": messages}
@@ -350,18 +362,18 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
                             acc["arguments"] += func["arguments"]
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            logger.error(f"DeepSeek messages 工具流式调用失败：HTTP {exc.code}，响应体：{error_body}")
+            logger.error(f"{ctx}DeepSeek messages 工具流式调用失败：HTTP {exc.code}，响应体：{error_body}")
             raise
 
         logger.info(
-            f"DeepSeek messages 工具流式轮次 {round_num} -> finish_reason={finish_reason}, "
+            f"{ctx}DeepSeek messages 工具流式轮次 {round_num} -> finish_reason={finish_reason}, "
             f"tool_calls={len(tool_call_acc)}"
         )
 
         if not tool_call_acc:
             full_content = "".join(content_parts).strip()
             if not full_content:
-                logger.warning("DeepSeek messages 工具流式循环结束但 content 为空")
+                logger.warning(f"{ctx}DeepSeek messages 工具流式循环结束但 content 为空")
             yield {"type": "done", "content": full_content}
             return
 
@@ -382,12 +394,12 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
                 args = {}
             if acc["name"] == "web_search" and tavily_api_key:
                 query = args.get("query", "")
-                logger.info(f"专家发起 web_search（messages 流式）：{query!r}")
+                logger.info(f"{ctx}专家发起 web_search：{query!r}")
                 try:
                     result_text = tavily_search(query, tavily_api_key)
                 except Exception as exc:
                     result_text = f"搜索失败：{exc}"
-                    logger.exception("Tavily 搜索失败")
+                    logger.exception(f"{ctx}Tavily 搜索失败")
             else:
                 result_text = "这个工具当前不可用（未配置搜索 API Key）。"
             messages.append({
@@ -396,16 +408,18 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
                 "content": result_text,
             })
 
-    logger.warning(f"messages 工具流式循环达到最大轮数 {max_tool_rounds}，强制结束")
+    logger.warning(f"{ctx}messages 工具流式循环达到最大轮数 {max_tool_rounds}，强制结束")
     yield {"type": "done", "content": "".join(content_parts).strip()}
 
 
 def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
                           model: str | None = None, base_url: str | None = None,
-                          max_tokens: int | None = None):
+                          max_tokens: int | None = None, context: str = ""):
     """流式版本——逐块 yield {"type": "reasoning"|"content", "delta": str}，供 UI 实时渲染用。
     跟 call_deepseek() 是两条独立路径，不影响不需要实时展示的场景（lessons.md 写入、内部起草
     建议等）继续用阻塞版本。model/base_url/max_tokens 的配置覆盖规则跟 call_deepseek 一致。
+
+    context: 调用上下文描述，用于日志。
 
     SSE 格式：每行 "data: {...}"，chunk 里 choices[0].delta 可能带 content 和/或
     reasoning_content（思考模型才有后者），最后一行是 "data: [DONE]"。
@@ -429,8 +443,9 @@ def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
+    ctx = f"[{context}] " if context else ""
     logger.debug(
-        f"DeepSeek 流式请求 -> model={model}, max_tokens={max_tokens}\n"
+        f"{ctx}DeepSeek 流式请求 -> model={model}, max_tokens={max_tokens}\n"
         f"--- system_prompt ---\n{system_prompt}\n--- user_prompt ---\n{user_prompt}"
     )
 
@@ -463,17 +478,17 @@ def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
                     yield {"type": "content", "delta": content_delta}
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        logger.error(f"DeepSeek 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        logger.error(f"{ctx}DeepSeek 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
         raise
 
     full_content = "".join(full_content_parts).strip()
     logger.info(
-        f"DeepSeek 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"{ctx}DeepSeek 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
         f"content_chars={len(full_content)}, reasoning_chars={len(''.join(full_reasoning_parts))}"
     )
     if not full_content:
         logger.warning(
-            f"DeepSeek 流式返回的 content 是空的！finish_reason={finish_reason}，"
+            f"{ctx}DeepSeek 流式返回的 content 是空的！finish_reason={finish_reason}，"
             f"很可能是 max_tokens 不够、被截断在思考阶段。"
         )
     yield {"type": "done", "content": full_content}
