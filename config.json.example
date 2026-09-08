@@ -10,8 +10,6 @@
     "master_enabled": false,
     "note": "自动化媒体发布流水线配置。默认全关：主开关、调度事件、渠道 mode 都要在后台(/admin/autopublish)逐个打开，避免部署后无意识触发真实发布。",
     "events": [
-      {"id": "collect", "label": "素材入池（扫描 autopublish_sources/）", "time": "18:00", "action": "collect", "enabled": false},
-      {"id": "draft", "label": "物料制作（为待生产发布单生成本地定稿/清单）", "time": "18:30", "action": "draft", "enabled": false},
       {"id": "dispatch", "label": "发布（把已放行且到点的内容发出去）", "time": "19:30", "action": "dispatch", "enabled": false}
     ],
     "channels": {
