@@ -11,13 +11,29 @@ super_brain 共享日志配置。
 """
 import logging
 import sys
+from datetime import datetime, timezone, timedelta
 
 from paths import SUPER_BRAIN
 
 LOG_DIR = SUPER_BRAIN / "logs"
 LOG_FILE = LOG_DIR / "super_brain.log"
 
+# UTC+8 时区（中国标准时间）
+UTC_PLUS_8 = timezone(timedelta(hours=8))
+
 _configured = False
+
+
+class UTC8Formatter(logging.Formatter):
+    """日志时间戳固定用 UTC+8，不依赖服务器本地时区设置。
+    部署到海外服务器（默认 UTC）时，日志时间也能直接看懂。"""
+
+    def formatTime(self, record, datefmt=None):
+        # 把 UTC timestamp 转成 UTC+8
+        dt = datetime.fromtimestamp(record.created, tz=UTC_PLUS_8)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.isoformat(sep=" ", timespec="seconds")
 
 
 def configure_logging(console_level: int = logging.INFO, file_level: int = logging.DEBUG) -> None:
@@ -33,7 +49,7 @@ def configure_logging(console_level: int = logging.INFO, file_level: int = loggi
     # 时也要能建出来；以前只有 mkdir(exist_ok=True) 在父目录缺失时会 FileNotFoundError。
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    formatter = logging.Formatter(
+    formatter = UTC8Formatter(
         fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
