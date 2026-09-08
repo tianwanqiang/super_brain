@@ -25,7 +25,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(wf, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(autopublish, "QUEUE_DIR", tmp_path / "queue")
     monkeypatch.setattr(autopublish, "ARTIFACTS_DIR", tmp_path / "artifacts")
-    monkeypatch.setattr(autopublish, "SOURCES_DIR", tmp_path / "sources")
 
     # 假步骤处理器（按步骤 id 精确分发——真实代码里 topics/research 都是 researcher，必须靠 id）
     monkeypatch.setattr(wf, "step_id_handlers", {

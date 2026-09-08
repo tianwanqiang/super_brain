@@ -1,9 +1,9 @@
 """
-super_brain autopublish - 自动化媒体发布流水线（骨架第一版）
+super_brain autopublish - 自动化媒体发布流水线
 
 定位：这是"多 agent 自动媒体发布"的调度/状态中枢。内容生产那一侧（content-strategist /
 writer / video-prompt / ops-assistant）项目里已经有了；这里补的是"发布侧"的骨架：
-    素材入池(collect) -> 物料制作(draft) -> 人工质检放行(approve) -> 定时发布(dispatch)
+    创建发布单（物料自动生成）-> 人工质检放行(approve) -> 定时发布(dispatch)
 
 跟项目其余部分的衔接方式（保持一致的原则）：
 - 发布单（PublishOrder）是唯一事实来源，落盘在 autopublish_queue/（运行时数据，gitignore）。
@@ -13,6 +13,7 @@ writer / video-prompt / ops-assistant）项目里已经有了；这里补的是"
     * 全局主开关 AUTOPUBLISH.master_enabled（默认关）
     * 每个渠道自己的 auto_publish / mode 开关（默认 mock/manual，绝不默认真实发布）
     * 每个发布单要 CEO 逐渠道点"批准发布"（gatekeeper 的人工放行闸门）
+- 物料在创建发布单时自动生成（文本定稿 / mock 视频清单），无需手动触发。
 - 视频生成默认走 mock provider（零成本、落一个 manifest 占位），真实生成 API
   （火山方舟 Seedance 等）以后按 VIDEO_GENERATORS 注册表插进来，配好 key 才生效。
 - 渠道发布默认 mock/manual；真实发布 API 只接入了公众号 freepublish（publishers.py），
@@ -33,7 +34,6 @@ from agent_registry import load_agent_registry, log_execution
 from paths import (
     AUTOPUBLISH_ARTIFACTS_DIR,
     AUTOPUBLISH_QUEUE_DIR,
-    AUTOPUBLISH_SOURCES_DIR,
     CONFIG_PATH,
 )
 
@@ -43,7 +43,6 @@ logger = logging.getLogger("super_brain.autopublish")
 # CONFIG_PATH 从 paths.py import（统一权威常量），不是本模块自拼的。
 QUEUE_DIR = AUTOPUBLISH_QUEUE_DIR
 ARTIFACTS_DIR = AUTOPUBLISH_ARTIFACTS_DIR
-SOURCES_DIR = AUTOPUBLISH_SOURCES_DIR
 
 # ---- 状态定义（单一事实来源，别处不要另造词） ----
 # 渠道级状态
@@ -101,18 +100,12 @@ DEFAULT_CHANNEL_CONF = {
 
 # 调度事件的动作类型（跟后台"立即执行"按钮共用同一套 key）
 ACTION_LABELS = {
-    "collect": "素材入池（扫描 autopublish_sources/）",
-    "draft": "物料制作（为待生产发布单生成本地定稿/清单）",
     "dispatch": "发布（把已放行且到点的内容发出去）",
 }
 
 DEFAULT_AUTOPUBLISH_CONFIG = {
     "master_enabled": False,   # 全局主开关。所有自动发布动作都受它约束，关着等于只读演示。
     "events": [                # 调度事件：time 是 HH:MM（24 小时制，服务器时区）
-        {"id": "collect", "label": ACTION_LABELS["collect"], "time": "18:00",
-         "action": "collect", "enabled": False},
-        {"id": "draft", "label": ACTION_LABELS["draft"], "time": "18:30",
-         "action": "draft", "enabled": False},
         {"id": "dispatch", "label": ACTION_LABELS["dispatch"], "time": "19:30",
          "action": "dispatch", "enabled": False},
     ],
@@ -121,9 +114,6 @@ DEFAULT_AUTOPUBLISH_CONFIG = {
 }
 
 CONFIG_KEY = "AUTOPUBLISH"
-
-# 素材文件里第一个 '# ' 标题行（title），没有就用文件名
-_TITLE_RE = re.compile(r"^\s*#\s+(.+?)\s*$", re.MULTILINE)
 
 # ---- 通用工具 ----
 
@@ -194,6 +184,7 @@ def empty_channel_state(channel: str) -> dict:
 def new_order(title: str, source: dict, channels: list[str], publish_at: str | None = None,
               note: str = "") -> dict:
     """建一个新的发布单。source 形如 {"kind": "text"|"file"|"manual", "text":..., "path":...}。
+    创建时自动为每个渠道生成物料（文本定稿 / mock 视频清单），不需要手动触发物料制作。
     返回订单 dict（调用方负责 save_order 落盘）。"""
     order_id = f"autopub_{_ts_id()}_{uuid.uuid4().hex[:6]}"
     order = {
@@ -212,10 +203,37 @@ def new_order(title: str, source: dict, channels: list[str], publish_at: str | N
     for ch in CHANNELS:
         if ch in channels:
             order["channels"][ch] = empty_channel_state(ch)
-    _append_history(order, "planner", "发布单创建", f"渠道：{sorted(order['channels'])}，计划发布：{publish_at or '跟随事件'}")
 
-    # planner（排期角色）的"决策"目前就是上面的默认路由：建单时选了哪些渠道就发哪些。
-    # 以后如果从素材自动决定渠道/档期，在这里加逻辑（或接 LLM），不要改调用方。
+    # 物料自动生成：创建时即为每个渠道生成定稿文件，无需手动触发
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    text = (source or {}).get("text", "")
+    for ch_name, st in order["channels"].items():
+        if ch_name in ("wechat", "toutiao"):
+            header = (
+                f"# {order['title']}\n\n"
+                f"> {CHANNELS[ch_name]['label']} · 本地定稿（骨架版：纯文本，未做平台排版）\n"
+                f"> 发布单：{order['id']} 来源：{(source or {}).get('kind')}\n\n---\n\n"
+            )
+            path = ARTIFACTS_DIR / f"{order['id']}_{ch_name}.md"
+            path.write_text(header + text, encoding="utf-8")
+            st["artifact"] = {"kind": "text_draft", "path": str(path),
+                              "note": "本地定稿（零成本骨架版，未做平台排版）"}
+        elif ch_name == "video":
+            manifest = {
+                "order_id": order["id"], "title": order["title"],
+                "provider": "mock", "status": "generated_mock",
+                "video_file": None,
+                "message": "mock 模式：没有调用真实视频生成 API。",
+                "generated_at": _now_str(),
+            }
+            path = ARTIFACTS_DIR / f"{order['id']}_video_manifest.json"
+            path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            st["artifact"] = {"kind": "video_manifest_mock", "path": str(path),
+                              "note": "mock 视频清单（未真实生成）"}
+        set_channel_status(order, ch_name, CH_DRAFTED, "物料已自动生成（创建时触发）")
+
+    _append_history(order, "planner", "发布单创建（物料自动生成）",
+                    f"渠道：{sorted(order['channels'])}，计划发布：{publish_at or '跟随事件'}")
     return order
 
 
@@ -357,116 +375,11 @@ def order_summary(order: dict) -> str:
     return CH_QUEUED
 
 
-# ---- 动作 1：collect（素材入池） ----
-
-def run_collect() -> dict:
-    """扫描 SOURCES_DIR 下 *.md/*.txt，为每个还没入池的文件建一个 QUEUED 发布单。
-    内容源适配器（opc/会议纪要/圆桌结论自动导入）以后在这里扩展——现在只吃目录里的文件。
-    返回 {"created": [...], "skipped_duplicates": n, "sources_dir": str}。零成本。"""
-    SOURCES_DIR.mkdir(parents=True, exist_ok=True)
-    existing_sources = {
-        (o.get("source") or {}).get("path")
-        for o in load_all_orders()
-        if (o.get("source") or {}).get("kind") == "file"
-    }
-    created, skipped = [], 0
-    for path in sorted(SOURCES_DIR.glob("*.md")) + sorted(SOURCES_DIR.glob("*.txt")):
-        if str(path) in existing_sources:
-            skipped += 1
-            continue
-        text = path.read_text(encoding="utf-8-sig", errors="replace")
-        m = _TITLE_RE.search(text)
-        title = m.group(1).strip() if m else path.stem
-        order = new_order(
-            title,
-            {"kind": "file", "path": str(path), "text": text[:20000]},
-            channels=list(CHANNELS.keys()),
-            note="来自素材目录扫描",
-        )
-        save_order(order)
-        created.append({"id": order["id"], "title": title})
-        logger.info(f"[collect] 素材入池：{path.name} -> {order['id']}")
-    log_execution("publish-planner", "素材入池扫描", f"新建 {len(created)} 单，跳过重复 {skipped} 个文件")
-    return {"created": created, "skipped_duplicates": skipped, "sources_dir": str(SOURCES_DIR)}
-
-
-# ---- 动作 2：draft（物料制作 = media-maker） ----
-
-def _write_text_draft(order: dict, channel: str, label: str) -> dict:
-    """零成本本地定稿：把发布单 source 的正文写成文件。渠道专属格式（公众号 HTML 排版、
-    头条格式改写）以后接 executors 的 adapt_draft_to_*（要花 DeepSeek 额度），骨架阶段
-    先落纯文本，让 CEO 能审内容本身。返回 artifact dict。"""
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    text = (order.get("source") or {}).get("text", "")
-    header = (
-        f"# {order['title']}\n\n"
-        f"> {label} · 本地定稿（骨架版：纯文本，未做平台排版）\n"
-        f"> 发布单：{order['id']}　来源：{(order.get('source') or {}).get('kind')}\n\n---\n\n"
-    )
-    path = ARTIFACTS_DIR / f"{order['id']}_{channel}.md"
-    path.write_text(header + text, encoding="utf-8")
-    return {"kind": "text_draft", "path": str(path), "note": "本地定稿（零成本骨架版，未做平台排版）"}
-
-
-def _mock_video_manifest(order: dict) -> dict:
-    """mock 视频生成：不调用任何真实 API，落一个 manifest 说明"这里本应是视频文件"。
-    provider 换成真实生成 API 后（注册到 VIDEO_GENERATORS），这个函数退休。"""
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    manifest = {
-        "order_id": order["id"],
-        "title": order["title"],
-        "provider": "mock",
-        "status": "generated_mock",
-        "video_file": None,
-        "message": "mock 模式：没有调用真实视频生成 API。配置真实 provider 后此处会产出视频文件/URL。",
-        "generated_at": _now_str(),
-    }
-    path = ARTIFACTS_DIR / f"{order['id']}_video_manifest.json"
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"kind": "video_manifest_mock", "path": str(path), "note": "mock 视频清单（未真实生成）"}
-
-
-def _channel_can_draft(order: dict, channel: str) -> tuple[bool, str]:
-    st = order["channels"].get(channel)
-    if st is None or not st.get("enabled"):
-        return False, "渠道未启用"
-    if st["status"] != CH_QUEUED:
-        return False, f"状态 {st['status']} 不是 queued，跳过"
-    return True, ""
-
-
-def run_draft_pending(order_ids: list[str] | None = None) -> dict:
-    """为所有 queued 渠道生产物料（media-maker 动作）。order_ids 为 None 时处理全部订单。
-    零成本（wechat 渠道真实推送草稿不在这里自动做，见 run_draft_wechat_push）。"""
-    orders = [load_order(i) for i in order_ids] if order_ids else load_all_orders()
-    produced, skipped = [], []
-    for order in orders:
-        if order is None:
-            continue
-        for channel in order["channels"]:
-            ok, reason = _channel_can_draft(order, channel)
-            if not ok:
-                skipped.append({"id": order["id"], "channel": channel, "reason": reason})
-                continue
-            st = order["channels"][channel]
-            if channel in ("wechat", "toutiao"):
-                st["artifact"] = _write_text_draft(order, channel, CHANNELS[channel]["label"])
-            elif channel == "video":
-                st["artifact"] = _mock_video_manifest(order)
-            else:
-                skipped.append({"id": order["id"], "channel": channel, "reason": "未知渠道"})
-                continue
-            set_channel_status(order, channel, CH_DRAFTED, "media-maker：物料已生成（等待 CEO 审阅放行）")
-            produced.append({"id": order["id"], "channel": channel})
-        save_order(order)
-    log_execution("media-maker", "物料制作", f"生产 {len(produced)} 条，跳过 {len(skipped)} 条")
-    return {"produced": produced, "skipped": skipped}
-
-
 def run_draft_wechat_push(order_id: str) -> dict:
     """把某个发布单的公众号正文推成真实公众号草稿（调 publishers.publish_wechat_draft）。
     这是真实外部动作（微信草稿箱里会多一篇草稿），所以只由后台按钮显式触发，不进自动调度。
-    需要 config.json 配好 WECHAT_* 凭据。排版是纯文本转简单 <p>（骨架版）。"""
+    需要 config.json 配好 WECHAT_* 凭据。排版走 adapt_draft_to_wechat（AI 排版，跟
+    ops-assistant 路径一致），不再用纯文本包 <p> 的骨架版。"""
     order = load_order(order_id)
     if order is None:
         raise ValueError(f"发布单不存在：{order_id}")
@@ -474,22 +387,30 @@ def run_draft_wechat_push(order_id: str) -> dict:
     if st is None:
         raise ValueError(f"发布单 {order_id} 没启用公众号渠道")
     artifact = st.get("artifact") or {}
-    if not artifact.get("path") or not Path(artifact["path"]).exists():
-        raise ValueError("公众号还没有本地定稿，先跑一次'物料制作'再推送")
+    raw_text = ""
+    if artifact.get("path") and Path(artifact["path"]).exists():
+        raw = Path(artifact["path"]).read_text(encoding="utf-8-sig")
+        if "---" in raw:
+            raw_text = raw.split("---", 1)[1].strip()
+        else:
+            raw_text = raw.strip()
+    if not raw_text:
+        raw_text = ((order.get("source") or {}).get("text") or "").strip()
+    if not raw_text:
+        raise ValueError("没有可推送的内容（本地定稿和发布单正文都为空）")
 
-    raw = Path(artifact["path"]).read_text(encoding="utf-8-sig")
-    # 剥掉我们加的头注，正文转成最简单合规的 HTML 段落（正式排版后续走 adapt_draft_to_wechat）
-    if "---" in raw:
-        raw = raw.split("---", 1)[1]
-    html = "".join(f"<p style=\"font-size:15px;line-height:1.8;color:#2e3a46;\">{p.strip()}</p>"
-                   for p in raw.splitlines() if p.strip())
-    # 封面：没配 WECHAT_DEFAULT_COVER_URL 时自动生成一张本地封面并给出公网链接
+    import executors
+    from llm_client import load_deepseek_api_key
+    api_key = load_deepseek_api_key()
+    title, html = executors.adapt_draft_to_wechat(raw_text, api_key)
+
     import imagegen
-    cover_path, cover_url = imagegen.ensure_wechat_cover(order["title"])
+    cover_path, cover_url = imagegen.ensure_wechat_cover(title)
     if cover_path:
-        st["artifact"]["cover_path"] = str(cover_path)
-    st["artifact"]["cover_url"] = cover_url
-    result = publishers.publish_wechat_draft(order["title"], html, cover_url=cover_url)
+        artifact["cover_path"] = str(cover_path)
+    artifact["cover_url"] = cover_url
+    st["artifact"] = artifact
+    result = publishers.publish_wechat_draft(title, html, cover_url=cover_url)
     st["artifact"]["draft_media_id"] = result["draft_media_id"]
     _ch_log(order, "wechat", f"已推送到公众号草稿箱：draft_media_id={result['draft_media_id']}")
     _append_history(order, "media-maker", "推送公众号草稿", result["draft_media_id"])
@@ -498,7 +419,7 @@ def run_draft_wechat_push(order_id: str) -> dict:
     return result
 
 
-# ---- 动作 3：dispatch（发布执行 = publisher） ----
+# ---- 动作：dispatch（发布执行 = publisher） ----
 
 def _due_now(order: dict, now: datetime | None = None) -> bool:
     """订单计划了 publish_at（HH:MM）时，只在 ±5 分钟窗口内算"到点"；没计划则随时可发
@@ -609,8 +530,8 @@ def event_action_map() -> dict[str, dict]:
 
 
 def scheduler_tick(now: datetime | None = None) -> list[str]:
-    """每分钟由 ui_app 的后台线程调用。主开关关闭时只跑 collect/draft（这两个是零成本、
-    无外部影响的内部动作，用户可能想在演示期打开）；dispatch 永远受主开关约束。"""
+    """每分钟由 ui_app 的后台线程调用。只处理 dispatch 事件（collect/draft 已删除，物料在
+    创建发布单时自动生成）。dispatch 受主开关约束。"""
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
     cfg = load_autopublish_config()
@@ -626,33 +547,23 @@ def scheduler_tick(now: datetime | None = None) -> list[str]:
             logger.warning(f"调度事件 {event.get('id')} 的 time 格式不对：{event.get('time')!r}，跳过")
             continue
         action = event.get("action")
-        if action not in ACTION_LABELS:
-            logger.warning(f"调度事件 {event.get('id')} 的 action 不认识：{action!r}")
+        if action != "dispatch":
+            # 兼容旧配置中可能存在的 collect/draft 事件，直接跳过
             continue
-        # dispatch 依赖主开关（内部有再校验）；collect/draft 零成本可直接放行
-        if action == "dispatch" and not master_enabled():
+        if not master_enabled():
             logger.info(f"调度 {today} {event.get('time')}：dispatch 被主开关拦截")
             continue
         try:
-            if action == "collect":
-                run_collect()
-            elif action == "draft":
-                run_draft_pending()
-            elif action == "dispatch":
-                run_dispatch_due(now=now)
+            run_dispatch_due(now=now)
             ran.append(action)
             logger.info(f"调度事件执行完成：{action}")
         except Exception:
-            logger.exception(f"调度事件执行失败：{action}（已捕获，不影响其他事件/下一分钟）")
+            logger.exception(f"调度事件执行失败：{action}（已捕获，不影响下一分钟）")
     return ran
 
 
 def run_action_once(action: str) -> dict:
     """后台"立即执行"按钮共用入口（admin 页面）。dispatch 会被主开关拦截时如实返回。"""
-    if action == "collect":
-        return {"collect": run_collect()}
-    if action == "draft":
-        return {"draft": run_draft_pending()}
     if action == "dispatch":
         return {"dispatch": run_dispatch_due()}
     raise ValueError(f"未知动作：{action!r}")
@@ -661,18 +572,16 @@ def run_action_once(action: str) -> dict:
 # ---- 命令行冒烟入口（不花钱，随时可以本地验证） ----
 
 def main() -> None:
-    """python autopublish.py collect|draft|dispatch|status —— 手动跑一次某个动作（等价于
-    后台的"立即执行"按钮）。不传参数打印当前配置与队列概况。"""
+    """python autopublish.py dispatch|status —— 手动跑一次 dispatch，或不传参数打印概况。"""
     import sys
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
 
-    if len(sys.argv) >= 2 and sys.argv[1] in ("collect", "draft", "dispatch"):
-        action = sys.argv[1]
-        print(f"===== autopublish 手动执行：{action} =====")
-        print(json.dumps(run_action_once(action), ensure_ascii=False, indent=2))
+    if len(sys.argv) >= 2 and sys.argv[1] == "dispatch":
+        print("===== autopublish 手动执行：dispatch =====")
+        print(json.dumps(run_action_once("dispatch"), ensure_ascii=False, indent=2))
         return
 
     cfg = load_autopublish_config()

@@ -1437,7 +1437,6 @@ def autopublish_page():
         channel_conf=cfg.get("channels", {}),
         view_orders=view_orders,
         master_enabled=bool(cfg.get("master_enabled")),
-        sources_dir=str(autopublish.SOURCES_DIR),
         queue_dir=str(autopublish.QUEUE_DIR),
         artifacts_dir=str(autopublish.ARTIFACTS_DIR),
         msg=session.pop("autopublish_msg", None),
@@ -1524,7 +1523,7 @@ def autopublish_order_new():
     order = autopublish.new_order(title, {"kind": "text", "text": text[:20000]}, channels, publish_at=publish_at)
     autopublish.save_order(order)
     logger.info(f"UI：新建发布单 {order['id']}")
-    session["autopublish_msg"] = f"发布单已创建：{order['id']}。下一步对它执行「物料制作」。"
+    session["autopublish_msg"] = f"发布单已创建：{order['id']}（物料已自动生成）。下一步：审阅后批准发布。"
     return redirect(url_for("autopublish_page"))
 
 
@@ -1534,19 +1533,6 @@ def _load_order_or_error(order_id: str):
         session["autopublish_error"] = f"发布单不存在：{order_id}"
         return None
     return order
-
-
-@app.route("/admin/autopublish/order/<order_id>/draft", methods=["POST"])
-def autopublish_order_draft(order_id):
-    if _load_order_or_error(order_id) is None:
-        return redirect(url_for("autopublish_page"))
-    try:
-        result = autopublish.run_draft_pending([order_id])
-        session["autopublish_msg"] = f"物料制作完成：produced={len(result['produced'])}，skipped={len(result['skipped'])}"
-    except Exception as exc:
-        logger.exception(f"UI：发布单 {order_id} 物料制作失败")
-        session["autopublish_error"] = f"物料制作失败：{exc}"
-    return redirect(url_for("autopublish_page"))
 
 
 @app.route("/admin/autopublish/order/<order_id>/push-wechat", methods=["POST"])

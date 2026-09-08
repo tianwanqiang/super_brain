@@ -44,7 +44,6 @@ OPC_ROOT = Path(os.environ.get("OPC_ROOT_DIR") or SUPER_BRAIN.parent)
 # 放这里，autopublish.py 直接 import，不要自己再拼一遍路径。
 AUTOPUBLISH_QUEUE_DIR = SUPER_BRAIN / "autopublish_queue"      # 发布单（持久化状态）
 AUTOPUBLISH_ARTIFACTS_DIR = SUPER_BRAIN / "autopublish_artifacts"  # 物料（定稿/清单）
-AUTOPUBLISH_SOURCES_DIR = SUPER_BRAIN / "autopublish_sources"  # 素材入池目录（内容源适配器）
 
 # 内容工作流（workflow.py）的运行实例目录——每个"定时→agent1→审批→…"的运行留痕。
 WORKFLOW_RUNS_DIR = SUPER_BRAIN / "workflow_runs"

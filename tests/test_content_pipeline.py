@@ -69,7 +69,6 @@ def isolated(tmp_path, monkeypatch):
     """把运行目录全部隔离到 tmp（不碰真实仓库数据）。"""
     monkeypatch.setattr(autopublish, "QUEUE_DIR", tmp_path / "queue")
     monkeypatch.setattr(autopublish, "ARTIFACTS_DIR", tmp_path / "artifacts")
-    monkeypatch.setattr(autopublish, "SOURCES_DIR", tmp_path / "sources")
     monkeypatch.setattr(cp, "RUNS_DIR", tmp_path / "runs")
     return tmp_path
 

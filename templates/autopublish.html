@@ -42,9 +42,9 @@
 
 <h1>自动化媒体发布流水线<a href="{{ url_for('admin') }}">← 运维总览</a><a href="{{ url_for('index') }}">主界面</a></h1>
 <p class="muted">
-  素材入池(collect) → 物料制作(draft) → CEO 人工放行(approve) → 定时发布(dispatch)。
-  这是 agent4（publisher 线）的后台。发布侧三个角色（publish-planner/media-maker/gatekeeper/
-  publisher）的职责见 agents.yaml；调度逻辑在 autopublish.py。
+  创建发布单（物料自动生成）→ CEO 审阅放行(approve) → 定时发布(dispatch)。
+  发布侧三个角色（publish-planner/media-maker/gatekeeper/publisher）的职责见 agents.yaml；
+  调度逻辑在 autopublish.py。
 </p>
 
 {% if msg %}<div class="banner banner-ok">{{ msg }}</div>{% endif %}
@@ -56,7 +56,7 @@
     <label style="font-size:14px;">
       <input type="checkbox" class="chk" name="master_enabled" value="1"
              {% if master_enabled %}checked{% endif %}> 全局主开关 master_enabled
-      <span class="muted">—— 关闭时所有"发布"动作一律不执行（collect/draft 零成本动作仍可在下方手动触发）；默认关闭。</span>
+      <span class="muted">—— 关闭时所有"发布"动作一律不执行；默认关闭。</span>
     </label>
     <table style="margin-top:10px;">
       <tr><th>事件</th><th>时间 (HH:MM)</th><th>启用</th></tr>
@@ -92,16 +92,8 @@
   </form>
 </div>
 
-<h2>② 立即执行（测试用，不用等调度到点）</h2>
+<h2>② 立即发布（测试用，不用等调度到点）</h2>
 <div class="card">
-  <form class="inline" method="post" action="{{ url_for('autopublish_run_now') }}">
-    <input type="hidden" name="action" value="collect">
-    <button type="submit">素材入池：扫描 {{ sources_dir }}</button>
-  </form>
-  <form class="inline" method="post" action="{{ url_for('autopublish_run_now') }}">
-    <input type="hidden" name="action" value="draft">
-    <button type="submit">物料制作：处理全部 queued 发布单</button>
-  </form>
   <form class="inline" method="post" action="{{ url_for('autopublish_run_now') }}">
     <input type="hidden" name="action" value="dispatch">
     <button type="submit" class="secondary">发布：已放行且到点（受主开关约束）</button>
@@ -114,7 +106,7 @@
   <form method="post" action="{{ url_for('autopublish_order_new') }}">
     <table>
       <tr><td>标题</td><td><input type="text" name="title" placeholder="必填" required></td></tr>
-      <tr><td>正文（素材）</td><td><textarea name="text" rows="6" placeholder="骨架版发布单直接贴内容；researcher 信息包/素材自动导入为扩展点"></textarea></td></tr>
+      <tr><td>正文（素材）</td><td><textarea name="text" rows="6" placeholder="粘贴内容；物料会在创建时自动生成"></textarea></td></tr>
       <tr>
         <td>渠道</td>
         <td>
@@ -181,12 +173,9 @@
     {% endfor %}
   </table>
   <div style="margin-top:8px;">
-    <form class="inline compact" method="post" action="{{ url_for('autopublish_order_draft', order_id=o.id) }}">
-      <button type="submit" class="secondary">物料制作（本单）</button>
-    </form>
     {% if o.channels.get('wechat') %}
     <form class="inline compact" method="post" action="{{ url_for('autopublish_order_push_wechat', order_id=o.id) }}">
-      <button type="submit">推送到公众号草稿箱（真实微信 API）</button>
+      <button type="submit">推送到公众号草稿箱（AI 排版 + 真实微信 API）</button>
     </form>
     {% endif %}
     <form class="inline compact" method="post" action="{{ url_for('autopublish_order_publish', order_id=o.id) }}">
@@ -203,7 +192,7 @@
   <details style="margin-top:8px;"><summary class="muted">查看发布单 JSON</summary><pre>{{ v.json }}</pre></details>
 </div>
 {% else %}
-<p class="muted">还没有发布单。用上面的"新建发布单"或先把素材文件放进 sources 目录再点"素材入池"。</p>
+<p class="muted">还没有发布单。用上面的"新建发布单"创建，物料会自动生成。</p>
 {% endfor %}
 
 </body>
