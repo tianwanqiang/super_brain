@@ -71,9 +71,6 @@
 <p>这个页面是配角——发布/运营这些"助手·执行工具"的运维操作放在这里，不占主界面版面。
 圆桌讨论是核心业务，在<a href="{{ url_for('index') }}">主界面</a>用聊天窗口直接发起，不在这里操作。</p>
 
-{% if just_ran %}
-<div class="banner">已运行 dispatcher.py（{{ "dry-run" if dry_run else "真实执行" }}），输出见下方日志区。</div>
-{% endif %}
 {% if config_success %}
 <div class="banner">{{ config_success }}</div>
 {% endif %}
@@ -114,7 +111,7 @@
   <tr>
     <td><code>@{{ a.name }}</code> {{ agent_label(a.name) }} <span class="pill pill-executor">助手·执行工具</span></td>
     <td>{{ a.description }}</td>
-    <td>对话里说"@{{ a.name }} 处理一下"（推荐），或者用下面的自动化通道（免打开对话，适合批处理/测试）</td>
+    <td>对话里说"@{{ a.name }} 处理一下"，或通过每日批处理自动调用</td>
   </tr>
   {% endfor %}
 </table>
@@ -145,50 +142,11 @@
 <details>
 <summary style="cursor:pointer; color:#666; font-size:13px; margin-top:20px;">高级运维操作（低频）</summary>
 
-<h2>自动化通道（仅“助手·执行工具”类，走 inbox + dispatcher.py）</h2>
-<p style="font-size:12.5px; color:#888;">
-  只列出真的有 <code>executor</code>、走这条路会真实执行的 agent。<code>ship</code>/<code>coordinator</code>
-  和四个圆桌专家都不在这里——圆桌专家的真实调用入口是主界面的聊天窗口。
-</p>
-<form class="inline" method="post" action="{{ url_for('inbox_new') }}">
-  <select name="to" required>
-    {% for a in assistant_agents %}
-    <option value="{{ a.name }}">{{ agent_label(a.name) }}（{{ a.name }}）</option>
-    {% endfor %}
-  </select>
-  <input type="text" name="message" placeholder="留言内容（单行，硬约束）" required>
-  <button type="submit">追加到 inbox</button>
-</form>
-
-<h2>触发 dispatcher.py</h2>
-<form class="inline" method="post" action="{{ url_for('dispatcher_run') }}">
-  <button type="submit" name="mode" value="dry-run" class="secondary">Dry-run（零成本，先跑这个）</button>
-  <button type="submit" name="mode" value="real">真实执行（会消耗额度/产生真实草稿）</button>
-</form>
-
-<h2>Inbox 留言（{{ messages|length }}，最新在前）</h2>
-<table>
-  <tr><th>From</th><th>To</th><th>Time</th><th>Status</th><th>Message</th></tr>
-  {% for m in messages %}
-  <tr>
-    <td>{{ m.from }}</td>
-    <td><code>{{ m.to }}</code></td>
-    <td>{{ m.time }}</td>
-    <td>
-      {% if m.status == 'pending' %}<span class="pill pill-pending">pending</span>
-      {% elif m.status == 'done' %}<span class="pill pill-done">done</span>
-      {% else %}{{ m.status }}{% endif %}
-    </td>
-    <td>{{ m.message }}</td>
-  </tr>
-  {% endfor %}
-</table>
-
 <h2>每日 18 点批量汇总</h2>
 <p style="font-size:12.5px; color:#888;">
   后台线程每分钟检查一次，过了 18 点且今天还没跑过就自动触发一次——如果当天有 opc 笔记，
-  会真的调 ops-assistant 生成头条/公众号草稿，再把今天的任务/圆桌/inbox 状态汇总成一份文档，
-  存到 <code>daily_digests/&lt;日期&gt;.md</code>。
+  会真的调 ops-assistant 生成头条/公众号草稿，再把今天的任务/圆桌状态汇总成一份文档，
+  存到 <code>daily_digests/&lt;日期&gt;.md</code>。opc 笔记不存在时跳过，不生成空汇总。
   {% if last_daily_batch_date %}今天已经跑过一次（{{ last_daily_batch_date }}）。
   {% else %}今天还没跑过。{% endif %}
 </p>

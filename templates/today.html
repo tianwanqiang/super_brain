@@ -57,22 +57,6 @@
   </section>
 
   <section>
-    <h2>待处理的 inbox 留言
-      <span class="count {{ 'nonzero' if digest.pending_inbox else '' }}">{{ digest.pending_inbox|length }}</span>
-    </h2>
-    {% if digest.pending_inbox %}
-    {% for m in digest.pending_inbox %}
-    <div class="card">
-      {{ m.message }}
-      <div class="meta">{{ m.get('from', '?') }} → {{ m.to }} @ {{ m.get('time', '?') }}</div>
-    </div>
-    {% endfor %}
-    {% else %}
-    <div class="empty">没有待处理的留言</div>
-    {% endif %}
-  </section>
-
-  <section>
     <h2>今天的圆桌讨论
       <span class="count">{{ digest.today_conversations|length }}</span>
     </h2>

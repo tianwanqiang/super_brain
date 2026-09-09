@@ -31,10 +31,8 @@ CONFIG_PATH = Path(
     or str(SUPER_BRAIN / "config.json")
 )
 
-INBOX = SUPER_BRAIN / "inbox.md"
 AGENTS_DIR = SUPER_BRAIN / "agents"
 AGENTS_CONFIG_PATH = SUPER_BRAIN / "agents.yaml"
-DISPATCH_LOG_DIR = SUPER_BRAIN / "dispatch_log"
 # OPC 素材根目录（默认=仓库上一级，与历史上 G:\code 相对 G:\code\super_brain 的关系一致；
 # 服务器/容器部署通过环境变量 OPC_ROOT_DIR 覆盖）。
 OPC_ROOT = Path(os.environ.get("OPC_ROOT_DIR") or SUPER_BRAIN.parent)

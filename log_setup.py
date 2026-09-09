@@ -28,7 +28,7 @@ class UTC8Formatter(logging.Formatter):
     """日志时间戳固定用 UTC+8，不依赖服务器本地时区设置。
     部署到海外服务器（默认 UTC）时，日志时间也能直接看懂。"""
 
-    def formatTime(self, record, datefmt=None):
+    def formatTime(self, record, datefmt=None): 
         # 把 UTC timestamp 转成 UTC+8
         dt = datetime.fromtimestamp(record.created, tz=UTC_PLUS_8)
         if datefmt:
@@ -50,7 +50,7 @@ def configure_logging(console_level: int = logging.INFO, file_level: int = loggi
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     formatter = UTC8Formatter(
-        fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        fmt="%(asctime)s %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 

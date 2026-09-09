@@ -1,8 +1,8 @@
 # super_brain agent 注册表——统一格式，所有 agent 的元信息集中在这里
 #
-# dispatcher.py 靠这个文件枚举"合法的 agent 有哪些"（inbox.md 的 To 字段校验依据这里，
-# 不再靠扫描 agents/ 目录下有哪些文件夹——目录存在不代表已经正式注册）。
-# 以后手动编排圆桌讨论（比如临时用 Agent 工具唤起专家）时，也应该从这里读 sources/
+# 本文件是枚举"合法 agent 有哪些"的权威来源——ui_app.py / executors.py / workflow.py 都从
+# 这里读取 agent 元信息，不再靠扫描 agents/ 目录（目录存在不代表已经正式注册）。
+# 手动编排圆桌讨论（比如临时用 Agent 工具唤起专家）时，也应该从这里读 sources/
 # output_requires_citation 这些字段去拼 prompt，不要每次手写。
 #
 # 字段说明：
@@ -14,17 +14,17 @@
 #   sources                  仅 roundtable 类型需要——知识框架的来源书籍/理论体系，用于可审计
 #   output_requires_citation 仅 roundtable 类型需要——是否要求每条结论标注依据第几条规则
 #   disclaimer_required      仅涉及专业资质敏感领域（如法律）需要——是否强制要求免责措辞
-#   executor                 仅少数 agent 需要——对应 publishers.py 里一个真实执行函数的 key，
-#                            有这个字段的 agent，dispatcher.py 会真的调用该函数落地动作
-#                            （建草稿，不涉及群发/发布），而不是只调 DeepSeek 起草建议文字。
-#                            没有这个字段的 agent（比如 ship、roundtable 类型），保持原有的
-#                            "只起草建议"行为不变。
+#   executor                 仅少数 agent 需要——对应 executors.py 里一个真实执行函数的 key，
+#                            有这个字段的 agent，由 digest.py 的每日批处理或对话内 @ 直接调用
+#                            该函数落地动作（建草稿，不涉及群发/发布），而不是只调 DeepSeek
+#                            起草建议文字。没有这个字段的 agent（比如 ship、roundtable 类型），
+#                            保持原有的"只起草建议"行为不变。
 #
 # 设计原则（2026-08-15 确认，别混用）：
 #   - 工具类助手（toutiao / ops-assistant 这类）：动作是确定性的、机械的，不需要"独立判断"
-#     这个环节，最好的实现是 dispatcher.py 直接调 publishers.py 里的函数（executor 字段），
-#     不要套 inbox 异步留言协议——那套协议是为"不需要人干等"设计的，用在这里只会徒增一次
-#     读写文件和状态机维护的成本，换不来任何东西。
+#     这个环节，最好的实现是由 executors.py 直接调用对应函数（executor 字段），不要套异步
+#     留言协议——那套协议是为"不需要人干等"设计的，用在这里只会徒增一次读写文件和状态机
+#     维护的成本，换不来任何东西。
 #   - 圆桌讨论 agent（roundtable 类型）：价值恰恰来自"真正独立的推理过程"本身，不能用
 #     executor 简化成直接函数调用——那样会把它们退化成工具类助手，丢掉圆桌讨论最核心的
 #     东西（独立视角之间真实的交叉校验）。roundtable 类型的 agent 不应该加 executor 字段。
@@ -124,12 +124,12 @@ agents:
 
   - name: writer
     type: execution
-    description: 把圆桌讨论的原始记录写成正式会议纪要（{date_time}_{title}.md），对话内 @ 触发，不经过 inbox
+    description: 把圆桌讨论的原始记录写成正式会议纪要（{date_time}_{title}.md），对话内 @ 触发
     knowledge_path: agents/writer/private.md
 
   - name: video-prompt
     type: execution
-    description: 把中文描述转成视频生成大模型的提示词（目前专精 Seedance 2.0），对话内 @ 触发，不经过 inbox
+    description: 把中文描述转成视频生成大模型的提示词（目前专精 Seedance 2.0），对话内 @ 触发
     knowledge_path: agents/video-prompt/private.md
 
   - name: ops-assistant
@@ -139,15 +139,15 @@ agents:
     executor: ops_assistant_full
 
 # ---- 自动化媒体发布流水线角色（2026-09 新增，autopublish.py 骨架）----
-# 这四个角色属于"发布侧"流水线：素材入池(collect) -> 物料制作(draft) -> 人工放行(approve)
-# -> 定时发布(dispatch)。跟上面老角色的分工差异：ops-assistant 是把"当天沉淀内容"一次性
-# 分发成待审阅草稿的旧路径；这里是对"发布单"做有状态、带调度、可重试的流水线。流水线的
-# 每个环节在 autopublish.py 里是确定性的 Python 函数 + 人工闸门，不套 inbox 协议。
+# 这四个角色属于"发布侧"流水线：物料制作(draft) -> 人工放行(approve) -> 定时发布(dispatch)。
+# 跟上面老角色的分工差异：ops-assistant 是把"当天沉淀内容"一次性分发成待审阅草稿的旧路径；
+# 这里是对"发布单"做有状态、带调度、可重试的流水线。流水线的每个环节在 autopublish.py 里
+# 是确定性的 Python 函数 + 人工闸门。
 # 设计说明：
 #   - publish-planner / gatekeeper 没有 executor：planner 目前只有默认路由（建单时选好的
-#     渠道），gatekeeper 的"放行/打回"是后台的人工按钮，两者不需要被 inbox/dispatcher 触发。
-#   - media-maker / publisher 有 executor（对应 executors.py 里两个真实函数），inbox 留言
-#     可以触发它们处理当天待生产/待发布的发布单——这是跟 ops-assistant 同款的自动化通道。
+#     渠道），gatekeeper 的"放行/打回"是后台的人工按钮，两者不需要被自动触发。
+#   - media-maker / publisher 有 executor（对应 executors.py 里两个真实函数），可由每日
+#     批处理或对话内 @ 直接调用，处理当天待生产/待发布的发布单。
 
   - name: publish-planner
     type: execution
@@ -171,23 +171,21 @@ agents:
     knowledge_path: agents/publisher/private.md
     executor: publisher_dispatch
 
-# ---- 内容产出流水线角色（agent1/agent3，2026-09 新增，content_pipeline.py）----
-# 跟"发布侧"那四个角色互补：这里补的是内容生产侧。agent2（writer）直接复用上面已注册的
+# ---- 内容产出流水线角色（2026-09 新增，content_pipeline.py）----
+# 跟"发布侧"那四个角色互补：这里补的是内容生产侧。writer 直接复用上面已注册的
 # writer/content-strategist，不重复注册。
-# 设计说明（2026-09 修订）：researcher/critic 的推理引擎在 content_pipeline.py（流水线编排
-# 内直接调用），同时给它们注册了 executor——inbox 留言（To: researcher / critic）可以从管理
-# 后台"自动化通道"触发单次真实执行：researcher 把留言内容当选题跑一次信息搜集，critic 把
-# 留言里的草稿路径/正文当输入跑一次点评。两条入口并存：自动化通道适合"把单条任务丢给
-# agent"；content_pipeline 编排适合"整条流水线一起跑"。
+# 设计说明：researcher/critic 的推理引擎在 content_pipeline.py（流水线编排内直接调用），
+# 同时给它们注册了 executor——workflow.py 的内容工作流编排会直接调用这些函数跑单次真实
+# 执行：researcher 把选题跑一次信息搜集，critic 把定稿跑一次点评，无需异步留言中转。
 
   - name: researcher
     type: execution
-    description: 内容流水线 agent1——选题→联网搜索(RAG 降级)→产出逐条带来源的信息包(Fact Package)；代码层红线：无来源事实直接丢弃
+    description: 内容流水线——选题→联网搜索(RAG 降级)→产出逐条带来源的信息包(Fact Package)；代码层红线：无来源事实直接丢弃
     knowledge_path: agents/researcher/private.md
     executor: researcher_apply
 
   - name: critic
     type: execution
-    description: 内容流水线 agent3——对 writer 定稿出量化评分卡意见单(钩子/密度/事实风险/平台适配)，只点评不改稿；verdict=accept/revise/reject
+    description: 内容流水线——对 writer 定稿出量化评分卡意见单(钩子/密度/事实风险/平台适配)，只点评不改稿；verdict=accept/revise/reject
     knowledge_path: agents/critic/private.md
     executor: critic_review

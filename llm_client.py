@@ -139,13 +139,13 @@ def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url
         method="POST",
     )
     ctx = f"[{context}] " if context else ""
-    logger.debug(f"{ctx}DeepSeek 请求 -> model={model}, max_tokens={max_tokens}, messages数={len(messages)}")
+    logger.debug(f"{ctx}请求 DeepSeek API | model={model}, max_tokens={max_tokens}, messages数={len(messages)}")
     try:
         with urllib.request.urlopen(req, timeout=90) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        logger.error(f"{ctx}DeepSeek 调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        logger.error(f"{ctx}DeepSeek API 调用失败 | HTTP {exc.code}, model={model}")
         raise
 
     usage = data.get("usage", {})
@@ -156,15 +156,15 @@ def _call_deepseek_core(messages: list[dict], api_key: str, model: str, base_url
     reasoning_content = message.get("reasoning_content", "")
 
     logger.info(
-        f"{ctx}DeepSeek 调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"{ctx}调用 DeepSeek API | model={model}, finish_reason={finish_reason}, "
         f"prompt_tokens={usage.get('prompt_tokens')}, "
         f"reasoning_tokens={usage.get('completion_tokens_details', {}).get('reasoning_tokens', 0)}, "
         f"completion_tokens={usage.get('completion_tokens')}, total_tokens={usage.get('total_tokens')}"
     )
     if not content:
         logger.warning(
-            f"{ctx}DeepSeek 返回的 content 是空的！finish_reason={finish_reason}，很可能是 max_tokens "
-            f"不够、被截断在思考阶段。reasoning_content 摘要：{reasoning_content[:200]!r}"
+            f"{ctx}DeepSeek 返回空 content | finish_reason={finish_reason}, "
+            f"reasoning_content 摘要：{reasoning_content[:200]!r}"
         )
     logger.debug(f"{ctx}DeepSeek 响应 content：\n{content}")
     return content
@@ -239,7 +239,7 @@ def call_deepseek_messages_stream(messages: list[dict], api_key: str,
     )
     ctx = f"[{context}] " if context else ""
     logger.debug(
-        f"{ctx}DeepSeek messages 流式请求 -> model={model}, max_tokens={max_tokens}, "
+        f"{ctx}请求 DeepSeek messages 流式 API | model={model}, max_tokens={max_tokens}, "
         f"messages数={len(messages)}, tools={'有' if tools else '无'}"
     )
 
@@ -272,18 +272,18 @@ def call_deepseek_messages_stream(messages: list[dict], api_key: str,
                     yield {"type": "content", "delta": content_delta}
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        logger.error(f"{ctx}DeepSeek messages 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        logger.error(f"{ctx}DeepSeek messages 流式调用失败 | HTTP {exc.code}, model={model}")
         raise
 
     full_content = "".join(full_content_parts).strip()
     logger.info(
-        f"{ctx}DeepSeek messages 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"{ctx}DeepSeek messages 流式调用完成 | model={model}, finish_reason={finish_reason}, "
         f"content_chars={len(full_content)}, reasoning_chars={len(''.join(full_reasoning_parts))}"
     )
     if not full_content:
         logger.warning(
-            f"{ctx}DeepSeek messages 流式返回的 content 是空的！finish_reason={finish_reason}，"
-            f"很可能是 max_tokens 不够、被截断在思考阶段。"
+            f"{ctx}DeepSeek messages 流式返回空 content | finish_reason={finish_reason}, "
+            f"可能 max_tokens 不够、被截断在思考阶段"
         )
     yield {"type": "done", "content": full_content}
 
@@ -362,18 +362,18 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
                             acc["arguments"] += func["arguments"]
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            logger.error(f"{ctx}DeepSeek messages 工具流式调用失败：HTTP {exc.code}，响应体：{error_body}")
+            logger.error(f"{ctx}DeepSeek 工具流式调用失败 | HTTP {exc.code}")
             raise
 
         logger.info(
-            f"{ctx}DeepSeek messages 工具流式轮次 {round_num} -> finish_reason={finish_reason}, "
+            f"{ctx}DeepSeek 工具流式轮次 {round_num} 完成 | finish_reason={finish_reason}, "
             f"tool_calls={len(tool_call_acc)}"
         )
 
         if not tool_call_acc:
             full_content = "".join(content_parts).strip()
             if not full_content:
-                logger.warning(f"{ctx}DeepSeek messages 工具流式循环结束但 content 为空")
+                logger.warning(f"{ctx}DeepSeek 工具流式循环结束 | content 为空")
             yield {"type": "done", "content": full_content}
             return
 
@@ -394,7 +394,7 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
                 args = {}
             if acc["name"] == "web_search" and tavily_api_key:
                 query = args.get("query", "")
-                logger.info(f"{ctx}专家发起 web_search：{query!r}")
+                logger.info(f"{ctx}web_search | query={query!r}")
                 try:
                     result_text = tavily_search(query, tavily_api_key)
                 except Exception as exc:
@@ -408,7 +408,7 @@ def call_deepseek_messages_with_tools_stream(messages: list[dict], api_key: str,
                 "content": result_text,
             })
 
-    logger.warning(f"{ctx}messages 工具流式循环达到最大轮数 {max_tool_rounds}，强制结束")
+    logger.warning(f"{ctx}工具流式循环达到上限 | max_tool_rounds={max_tool_rounds}")
     yield {"type": "done", "content": "".join(content_parts).strip()}
 
 
@@ -445,7 +445,7 @@ def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
     )
     ctx = f"[{context}] " if context else ""
     logger.debug(
-        f"{ctx}DeepSeek 流式请求 -> model={model}, max_tokens={max_tokens}\n"
+        f"{ctx}请求 DeepSeek 流式 API | model={model}, max_tokens={max_tokens}\n"
         f"--- system_prompt ---\n{system_prompt}\n--- user_prompt ---\n{user_prompt}"
     )
 
@@ -478,18 +478,18 @@ def call_deepseek_stream(system_prompt: str, user_prompt: str, api_key: str,
                     yield {"type": "content", "delta": content_delta}
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        logger.error(f"{ctx}DeepSeek 流式调用失败：HTTP {exc.code}，model={model}，响应体：{error_body}")
+        logger.error(f"{ctx}DeepSeek 流式调用失败 | HTTP {exc.code}, model={model}")
         raise
 
     full_content = "".join(full_content_parts).strip()
     logger.info(
-        f"{ctx}DeepSeek 流式调用完成 -> model={model}, finish_reason={finish_reason}, "
+        f"{ctx}DeepSeek 流式调用完成 | model={model}, finish_reason={finish_reason}, "
         f"content_chars={len(full_content)}, reasoning_chars={len(''.join(full_reasoning_parts))}"
     )
     if not full_content:
         logger.warning(
-            f"{ctx}DeepSeek 流式返回的 content 是空的！finish_reason={finish_reason}，"
-            f"很可能是 max_tokens 不够、被截断在思考阶段。"
+            f"{ctx}DeepSeek 流式返回空 content | finish_reason={finish_reason}, "
+            f"可能 max_tokens 不够、被截断在思考阶段"
         )
     yield {"type": "done", "content": full_content}
 
@@ -577,7 +577,7 @@ def call_deepseek_with_tools(system_prompt: str, user_prompt: str, api_key: str,
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            logger.error(f"DeepSeek 工具调用失败：HTTP {exc.code}，响应体：{error_body}")
+            logger.error(f"DeepSeek 工具调用失败 | HTTP {exc.code}")
             raise
 
         choice = data["choices"][0]
@@ -585,14 +585,14 @@ def call_deepseek_with_tools(system_prompt: str, user_prompt: str, api_key: str,
         usage = data.get("usage", {})
         tool_calls = message.get("tool_calls") or []
         logger.info(
-            f"DeepSeek 工具调用轮次 {round_num} -> finish_reason={choice.get('finish_reason')}, "
+            f"DeepSeek 工具调用轮次 {round_num} 完成 | finish_reason={choice.get('finish_reason')}, "
             f"tool_calls={len(tool_calls)}, total_tokens={usage.get('total_tokens')}"
         )
 
         if not tool_calls:
             content = (message.get("content") or "").strip()
             if not content:
-                logger.warning("DeepSeek 工具调用循环结束但 content 为空，可能被截断")
+                logger.warning("DeepSeek 工具调用循环结束 | content 为空，可能被截断")
             return content
 
         messages.append(message)
@@ -604,7 +604,7 @@ def call_deepseek_with_tools(system_prompt: str, user_prompt: str, api_key: str,
                 args = {}
             if func_name == "web_search" and tavily_api_key:
                 query = args.get("query", "")
-                logger.info(f"专家发起 web_search：{query!r}")
+                logger.info(f"web_search | query={query!r}")
                 try:
                     result_text = tavily_search(query, tavily_api_key)
                 except Exception as exc:
@@ -618,7 +618,7 @@ def call_deepseek_with_tools(system_prompt: str, user_prompt: str, api_key: str,
                 "content": result_text,
             })
 
-    logger.warning(f"工具调用循环达到最大轮数 {max_tool_rounds}，强制返回最后一次的内容")
+    logger.warning(f"工具调用循环达到上限 | max_tool_rounds={max_tool_rounds}")
     return (message.get("content") or "").strip()
 
 
@@ -693,18 +693,18 @@ def call_deepseek_with_tools_stream(system_prompt: str, user_prompt: str, api_ke
                             acc["arguments"] += func["arguments"]
         except urllib.error.HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")
-            logger.error(f"DeepSeek 流式工具调用失败：HTTP {exc.code}，响应体：{error_body}")
+            logger.error(f"DeepSeek 流式工具调用失败 | HTTP {exc.code}")
             raise
 
         logger.info(
-            f"DeepSeek 流式工具调用轮次 {round_num} -> finish_reason={finish_reason}, "
+            f"DeepSeek 流式工具调用轮次 {round_num} 完成 | finish_reason={finish_reason}, "
             f"tool_calls={len(tool_call_acc)}"
         )
 
         if not tool_call_acc:
             full_content = "".join(content_parts).strip()
             if not full_content:
-                logger.warning("DeepSeek 流式工具调用循环结束但 content 为空，可能被截断")
+                logger.warning("DeepSeek 流式工具调用循环结束 | content 为空，可能被截断")
             yield {"type": "done", "content": full_content}
             return
 
@@ -725,7 +725,7 @@ def call_deepseek_with_tools_stream(system_prompt: str, user_prompt: str, api_ke
                 args = {}
             if acc["name"] == "web_search" and tavily_api_key:
                 query = args.get("query", "")
-                logger.info(f"专家发起 web_search（流式）：{query!r}")
+                logger.info(f"web_search（流式） | query={query!r}")
                 try:
                     result_text = tavily_search(query, tavily_api_key)
                 except Exception as exc:
@@ -739,5 +739,5 @@ def call_deepseek_with_tools_stream(system_prompt: str, user_prompt: str, api_ke
                 "content": result_text,
             })
 
-    logger.warning(f"流式工具调用循环达到最大轮数 {max_tool_rounds}，强制结束")
+    logger.warning(f"流式工具调用循环达到上限 | max_tool_rounds={max_tool_rounds}")
     yield {"type": "done", "content": "".join(content_parts).strip()}

@@ -60,22 +60,22 @@ DEFAULT_WORKFLOW_ID = "default_daily"
 
 DEFAULT_WORKFLOWS = {
     DEFAULT_WORKFLOW_ID: {
-        "label": "每日内容流水线（选题审核 → 研究 → 写作 → 点评 → 交接发布）",
-        # direction：可选"运营方向预设"——定时自动选题时让 agent1 朝这个方向出候选；
+        "label": "每日内容流水线（选题 → 搜集 → 写作 → 评分 → 发布）",
+        # direction：可选"运营方向预设"——定时自动选题时让选题策划朝这个方向出候选；
         # 留空则按系统定位（一人公司决策陪练 / AI 圆桌）泛选。不强制用户提供。
         "direction": "",
         "schedule": {"time": "20:00", "enabled": False},
         "steps": [
             {"id": "topics", "agent": "researcher", "requires_approval": True,
-             "label": "agent1·选题提案（生成候选，审核定题后继续）"},
+             "label": "选题策划（生成候选，确认定题后继续）"},
             {"id": "research", "agent": "researcher", "requires_approval": True,
-             "label": "agent1·信息搜集（按已定选题联网+RAG，红线去伪）"},
+             "label": "信息搜集（联网搜索+知识库，去伪存真）"},
             {"id": "write", "agent": "writer", "requires_approval": True,
-             "label": "agent2·成稿（writer 链）"},
+             "label": "文案写作（基于事实包生成定稿）"},
             {"id": "critic", "agent": "critic", "requires_approval": True,
-             "label": "agent3·评分卡点评（只评不改）"},
+             "label": "质量评分（只评不改，出评分卡）"},
             {"id": "publish", "agent": "publisher", "requires_approval": False,
-             "label": "agent4·交接发布单（渠道级审批在发布后台）"},
+             "label": "交接发布单（渠道级审批在发布后台）"},
         ],
     }
 }
@@ -206,7 +206,7 @@ def _prev_artifact(run: dict, index: int) -> dict | None:
 
 
 def _handle_topics(ctx: dict) -> dict:
-    """agent1 定时任务的第一个动作：生成候选选题清单，供人审核定题。
+    """选题策划：定时任务的第一个动作，生成候选选题清单，供人审核定题。
     输入方向优先级：手动素材(source_text) > 本次运行方向预设(direction) > 已有 topic。
     都没有就结合 researcher 的框架出通用候选。产出 candidates，不含任何落地动作。"""
     framework = load_private_context("researcher", load_agent_registry())
@@ -257,7 +257,7 @@ def _handle_topics(ctx: dict) -> dict:
 
 
 def _handle_research(ctx: dict) -> dict:
-    """agent1：信息搜集 → 信息包。ctx: {topic, api_key}。"""
+    """信息搜集：按已定选题联网搜索+知识库检索，产出带来源的事实清单。ctx: {topic, api_key}。"""
     topic = (ctx.get("topic") or "").strip()
     if not topic:
         raise ValueError("research 步骤需要 topic（选题）")
@@ -269,7 +269,9 @@ def _handle_research(ctx: dict) -> dict:
         "facts": len(package["facts"]),
         "dropped": len(package["dropped"]),
         "conflicts": len(package["conflict_notes"]),
+        "gaps": len(package.get("coverage_gaps", [])),
         "web_used": package["web_used"],
+        "queries": package.get("queries", []),
         "file": str(file_path),
         "payload": content_pipeline.materialize_source(package),
         "preview": content_pipeline.materialize_source(package)[:4000],
@@ -277,7 +279,7 @@ def _handle_research(ctx: dict) -> dict:
 
 
 def _handle_write(ctx: dict) -> dict:
-    """agent2：把上个步骤的产物（或手动 source_text）写成定稿。"""
+    """文案写作：把上个步骤的产物（或手动 source_text）写成定稿。"""
     material = ctx.get("source_text") or ""
     if not material:
         prev = _prev_artifact(ctx["run"], ctx["index"])
@@ -294,7 +296,7 @@ def _handle_write(ctx: dict) -> dict:
 
 
 def _handle_critic(ctx: dict) -> dict:
-    """agent3：对上个步骤的定稿出评分卡（只评不改）。"""
+    """质量评分：对上个步骤的定稿出评分卡（只评不改）。"""
     prev = _prev_artifact(ctx["run"], ctx["index"])
     draft = ((prev or {}).get("payload") or "").strip()
     title = (prev or {}).get("title", "工作流定稿")
@@ -317,7 +319,7 @@ def _handle_critic(ctx: dict) -> dict:
 
 
 def _handle_publish(ctx: dict) -> dict:
-    """agent4：把定稿交接成 autopublish 发布单（渠道级审批在 /admin/autopublish）。"""
+    """交接发布单：把定稿交接成 autopublish 发布单（渠道级审批在 /admin/autopublish）。"""
     prev = _prev_artifact(ctx["run"], ctx["index"])
     final_text = ((prev or {}).get("payload") or "").strip() or (ctx.get("source_text") or "").strip()
     if not final_text:

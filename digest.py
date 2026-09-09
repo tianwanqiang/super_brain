@@ -12,11 +12,9 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-import dispatcher
 import roundtable
 import tasks
-from agent_registry import load_agent_registry
-from paths import INBOX, OPC_ROOT, SUPER_BRAIN
+from paths import OPC_ROOT, SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.digest")
 
@@ -24,17 +22,12 @@ DAILY_DIGESTS_DIR = SUPER_BRAIN / "daily_digests"
 
 
 def build_today_digest() -> dict:
-    """零成本聚合——只读 tasks.yaml / inbox.md / conversations/*.json，不调用任何 LLM。
+    """零成本聚合——只读 tasks.yaml / conversations/*.json，不调用任何 LLM。
     是"主动触发层"的核心：CEO 打开页面就能看到"今天有什么需要我看"，不用自己想起来去问。
     """
     today = datetime.now().strftime("%Y-%m-%d")
 
     pending = tasks.pending_tasks()
-
-    pending_inbox: list[dict] = []
-    if INBOX.exists():
-        registry = load_agent_registry()
-        pending_inbox = dispatcher.parse_pending_messages(INBOX.read_text(encoding="utf-8-sig"), registry)
 
     today_conversations = [
         c for c in roundtable.load_all_conversations()
@@ -44,7 +37,6 @@ def build_today_digest() -> dict:
     return {
         "date": today,
         "pending_tasks": pending,
-        "pending_inbox": pending_inbox,
         "today_conversations": today_conversations,
     }
 
@@ -69,14 +61,6 @@ def _render_digest_markdown(digest: dict, ops_result: dict | None) -> str:
         lines.append("（没有待确认的任务）")
     lines.append("")
 
-    lines.append(f"## 待处理的 inbox 留言（{len(digest['pending_inbox'])} 条）")
-    if digest["pending_inbox"]:
-        for m in digest["pending_inbox"]:
-            lines.append(f"- [{m.get('to')}] {m.get('from', '?')} @ {m.get('time', '?')}：{m.get('message', '')}")
-    else:
-        lines.append("（没有待处理的留言）")
-    lines.append("")
-
     if ops_result is not None:
         lines.append("## 今日内容分发结果")
         for key, value in ops_result.items():
@@ -86,10 +70,12 @@ def _render_digest_markdown(digest: dict, ops_result: dict | None) -> str:
     return "\n".join(lines)
 
 
-def run_daily_batch(date: str | None = None, api_key: str | None = None) -> Path:
+def run_daily_batch(date: str | None = None, api_key: str | None = None) -> Path | None:
     """每日批处理——如果今天有 opc 笔记，先触发 ops-assistant 生成头条/公众号草稿
-    （这一步会真的调用 DeepSeek），然后把结果和今天的任务/圆桌/inbox 状态汇总成一份
+    （这一步会真的调用 DeepSeek），然后把结果和今天的任务/圆桌状态汇总成一份
     可读文档，落盘到 daily_digests/{date}.md。
+
+    opc 笔记不存在时整个批处理跳过，不生成汇总文档。
 
     只应该被真正的每日调度触发一次；重复调用不报错，但会重复花 DeepSeek 额度
     （如果当天 opc 笔记存在的话），调用方自己负责"今天是否已经跑过"这个判断
@@ -99,22 +85,24 @@ def run_daily_batch(date: str | None = None, api_key: str | None = None) -> Path
     date = date or f"{now.month}_{now.day}"  # opc 文件用的日期格式：{月}_{日}
     display_date = now.strftime("%Y-%m-%d")
 
+    opc_path = OPC_ROOT / f"opc_{date}.md"
+    if not opc_path.exists():
+        logger.info(f"每日批处理 | {opc_path} 不存在，跳过")
+        return None
+
     digest = build_today_digest()
 
     ops_result = None
-    opc_path = OPC_ROOT / f"opc_{date}.md"
-    if opc_path.exists() and api_key:
+    if api_key:
         import executors
         try:
             ops_result = executors.execute_ops_assistant_full(date, api_key)
         except Exception:
-            logger.exception("每日批处理：ops-assistant 执行失败，仍会继续生成汇总文档")
+            logger.exception("每日批处理 | ops-assistant 执行失败，仍会继续生成汇总文档")
             ops_result = {"error": "ops-assistant 执行失败，详情看日志"}
-    elif not opc_path.exists():
-        logger.info(f"每日批处理：{opc_path} 不存在，跳过内容分发，只生成汇总")
 
     DAILY_DIGESTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = DAILY_DIGESTS_DIR / f"{display_date}.md"
     out_path.write_text(_render_digest_markdown(digest, ops_result), encoding="utf-8")
-    logger.info(f"每日汇总已落盘：{out_path}")
+    logger.info(f"每日汇总已落盘 | {out_path}")
     return out_path

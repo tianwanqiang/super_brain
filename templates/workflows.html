@@ -59,13 +59,13 @@
 {% include '_font_ctl.html' %}
 
 <h1>内容工作流<a href="{{ url_for('admin') }}">← 运维总览</a><a href="{{ url_for('autopublish_page') }}">发布后台</a><a href="{{ url_for('index') }}">主界面</a></h1>
-<p class="sub">定时跑 · 预览 · 逐步审批。这是 agent1-4 内容流水线的总控台。</p>
+<p class="sub">定时跑 · 预览 · 逐步审批。这是内容流水线的总控台。</p>
 
 <details class="help">
   <summary>❓ 怎么用（30 秒）</summary>
   <ul>
     <li><b>两种启动方式</b>：一是上面"定时任务"到点自动开始；二是"立即开始"手动触发。都不用你时刻盯。</li>
-    <li><b>选题</b>：不填选题时由 agent1 自动生成候选，你在卡片里选一个或临时改；填了选题则跳过候选直接做研究。</li>
+    <li><b>选题</b>：不填选题时自动生成候选，你在卡片里选一个或临时改；填了选题则跳过候选直接做研究。</li>
     <li><b>审批节奏</b>：高亮的那个"等你审核"步骤，点 ✅ 通过才继续下一环节；打回则停下。</li>
     <li><b>失败可恢复</b>：临时出错（如额度不足）不会白跑，可重试 / 重跑整个流程 / 删除这条记录。</li>
   </ul>
@@ -116,7 +116,7 @@
     {% else %}
     <input type="hidden" name="workflow_id" value="{{ default_workflow_id }}">
     {% endif %}
-    <input type="text" class="grow" name="topic" placeholder="可选：直接指定选题（不填则由 agent1 自动生成候选）">
+    <input type="text" class="grow" name="topic" placeholder="可选：直接指定选题（不填则自动生成候选）">
     <button type="submit" class="primary">开始一次工作流</button>
   </form>
   <div class="muted" style="margin-top:8px;">真实运行会调用 DeepSeek/Tavily，按需产生少量费用。</div>
@@ -175,8 +175,28 @@
             <button type="submit" class="primary small">确定选题并继续</button>
           </form>
         {% elif art.kind == 'research' %}
-          <span class="muted">facts={{ art.facts }} · dropped={{ art.dropped }} · conflicts={{ art.conflicts }} · web={{ art.web_used }}</span>
-          <details class="prod"><summary>展开信息包</summary><pre>{{ art.preview }}</pre></details>
+          <div style="margin:6px 0; font-size:13px; line-height:1.7;">
+            {% if art.facts == 0 %}
+            <div class="banner banner-err" style="margin:4px 0; padding:8px 12px; font-size:12.5px;">
+              ⚠ 未搜集到任何有效事实——通过后写作步骤将仅凭模型自身知识生成内容，无事实来源支撑。
+            </div>
+            {% else %}
+            <div>
+              <strong>搜集结果：</strong>
+              {{ art.facts }} 条事实采纳
+              {% if art.dropped %} · <span style="color:#b3402f;">{{ art.dropped }} 条丢弃（无可靠来源）</span>{% endif %}
+              {% if art.conflicts %} · <span style="color:#a35b00;">{{ art.conflicts }} 条信息冲突</span>{% endif %}
+              {% if art.gaps %} · <span style="color:#888;">{{ art.gaps }} 处未覆盖</span>{% endif %}
+            </div>
+            {% endif %}
+            <div class="muted" style="margin-top:2px;">
+              检索方式：{{ '联网搜索' if art.web_used else '本地知识库' }}
+              {% if art.queries %} · 关键词：{{ art.queries | join('、') }}{% endif %}
+            </div>
+            {% if art.facts > 0 %}
+            <details class="prod" style="margin-top:4px;"><summary>查看事实清单（{{ art.facts }} 条）</summary><pre>{{ art.preview }}</pre></details>
+            {% endif %}
+          </div>
         {% elif art.kind == 'draft' %}
           <span style="font-weight:600;">{{ art.title }}</span>
           <details class="prod"><summary>展开定稿</summary><pre>{{ art.preview }}</pre></details>

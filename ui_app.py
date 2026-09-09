@@ -4,8 +4,8 @@ super_brain 控制台
 主界面 = 圆桌讨论聊天窗口（GPT 类对话窗口的形态）：勾专家、提问题、看 Round 1/Round 2/
 会议纪要，就是这个产品的核心业务，不是一堆功能入口里的一项。
 
-inbox/dispatcher/自动化通道这些"助手·执行工具"相关的运维操作，全部挪到 /admin 二级页面——
-它们是配角，不该占主界面的版面。
+运维操作（自动发布、内容工作流、配置管理）全部放在 /admin 二级页面——它们是配角，
+不该占主界面的版面。
 
 调用机制：圆桌讨论全程走 roundtable.py 的纯 Python 实现（urllib 直连 DeepSeek API + 线程池
 并行），不经过 Claude Code 的 Agent 工具，UI 进程本身就是唤起圆桌的主体。
@@ -22,8 +22,6 @@ import os
 import queue
 import re
 import secrets
-import subprocess
-import sys
 import threading
 import time
 from datetime import datetime
@@ -36,7 +34,6 @@ import autopublish
 import config_check
 import config_store
 import digest
-import dispatcher
 import executors
 import i18n
 import llm_client
@@ -193,16 +190,14 @@ def _pop_draft_error() -> str | None:
         return message
 
 
-INBOX = SUPER_BRAIN / "inbox.md"
-DISPATCHER_SCRIPT = SUPER_BRAIN / "dispatcher.py"
 CONFIG_PATH = config_store.CONFIG_PATH  # 统一权威常量（paths.CONFIG_PATH），不再本模块自拼
 DRAFT_LOG_DIR = SUPER_BRAIN / "draft_log"
 
 
 def categorize_agents(registry: dict[str, dict]) -> tuple[list, list, list]:
-    """跟 2026-08-15 定的原则对齐：不是简单按 type 分组，是按"该怎么被唤起"分组。
-    - roundtable：核心圆桌决策，主界面的聊天窗口就是它的真实调用入口（Python 直连，非 inbox）
-    - assistant：有 executor，走 inbox+dispatcher 是真实执行，是 admin 页的自动化通道
+    """按"该怎么被唤起"分组（2026-08-15 定的原则）：
+    - roundtable：核心圆桌决策，主界面的聊天窗口就是它的真实调用入口（Python 直连）
+    - assistant：有 executor，由每日批处理或对话内 @ 直接调用执行
     - conversation：其余（ship/coordinator/writer 这类）——没有 executor，只能对话内 @ 唤起
     """
     roundtable_agents, conversation, assistant = [], [], []
@@ -263,66 +258,6 @@ def _write_config_with_backup(config: dict) -> None:
     版本链）——防止这次写入内容本身有问题、或者以后又出现类似覆盖丢失的 bug 时还有得救。
     实现委托 config_store（统一读写实现的唯一入口）。"""
     config_store.write_config_with_backup(config, path=CONFIG_PATH)
-
-
-def parse_all_messages_for_display() -> list[dict]:
-    """跟 dispatcher.parse_pending_messages 不同——这个是给 UI 展示用的，不过滤 pending/done，
-    也不因为格式错误就丢弃（只是标记出来），方便在页面上看到 inbox 里真实的全貌，包括坏数据。
-    """
-    if not INBOX.exists():
-        return []
-    text = INBOX.read_text(encoding="utf-8-sig")
-    if dispatcher.MESSAGE_LOG_HEADING not in text:
-        return []
-    text = text.split(dispatcher.MESSAGE_LOG_HEADING, 1)[1]
-
-    messages = []
-    for raw_block in text.split("\n---\n"):
-        block = raw_block.strip()
-        if "From:" not in block or "To:" not in block:
-            continue
-        entry: dict[str, str] = {}
-        for line in block.splitlines():
-            m = re.match(r"^(From|To|Time|Status|Message):\s*(.*)$", line.strip())
-            if m:
-                entry[m.group(1).lower()] = m.group(2).strip()
-        messages.append(entry)
-    messages.reverse()  # 最新的留言排最前面，方便看
-    return messages
-
-
-def append_inbox_message(to: str, message: str, sender: str = "用户") -> None:
-    """按 inbox.md 的硬约束格式追加一条留言（追加，不修改历史）。"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    block = (
-        f"\n---\n"
-        f"From: {sender}\n"
-        f"To: {to}\n"
-        f"Time: {now}\n"
-        f"Status: pending\n"
-        f"Message: {message}\n"
-    )
-    with INBOX.open("a", encoding="utf-8") as f:
-        f.write(block)
-    logger.info(f"UI：新增 inbox 留言 -> To={to}, Message={message!r}")
-
-
-def run_dispatcher(dry_run: bool) -> str:
-    """真的跑一次 dispatcher.py（子进程，而不是在同一个 Flask 进程里 import 调用），
-    这样跟命令行用户实际会经历的路径完全一致，UI 只是换了个触发入口，不是另一套逻辑。
-    """
-    args = [sys.executable, str(DISPATCHER_SCRIPT)]
-    if dry_run:
-        args.append("--dry-run")
-    logger.info(f"UI：触发 dispatcher.py（{'dry-run' if dry_run else '真实执行'}）")
-    result = subprocess.run(
-        args, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(SUPER_BRAIN),
-    )
-    output = result.stdout or ""
-    if result.stderr:
-        output += "\n--- stderr ---\n" + result.stderr
-    logger.info(f"UI：dispatcher.py 运行结束，exit={result.returncode}")
-    return output
 
 
 def load_draft_log() -> dict[str, dict]:
@@ -399,11 +334,9 @@ def render_chat(conversation_id: str | None = None, force_new: bool = False, **e
 
 
 def render_admin(**extra):
-    """二级页面：inbox / dispatcher / 自动化通道这些运维操作，不是主界面。"""
+    """二级页面：自动发布、内容工作流、配置管理等运维操作，不是主界面。"""
     registry = agent_registry.load_agent_registry()
     roundtable_agents, conversation_agents, assistant_agents = categorize_agents(registry)
-    messages = parse_all_messages_for_display()
-    pending_count = sum(1 for m in messages if m.get("status") == "pending")
     config = load_config_safe()
 
     recent_log = extra.pop("recent_log", None)
@@ -425,8 +358,6 @@ def render_admin(**extra):
         roundtable_agents=roundtable_agents,
         conversation_agents=conversation_agents,
         assistant_agents=assistant_agents,
-        messages=messages,
-        pending_count=pending_count,
         recent_log=recent_log,
         meeting_minutes_dir=config.get("MEETING_MINUTES_DIR"),
         toutiao_drafts_dir_configured=config.get("TOUTIAO_DRAFTS_DIR"),
@@ -1089,7 +1020,7 @@ def admin():
 @app.route("/today")
 def today_digest():
     """主动触发层——零成本聚合视图，不调用任何 LLM，随便刷新都不花钱。
-    汇总今天还没处理的东西：待确认任务、待处理 inbox 留言、今天开过的圆桌讨论。
+    汇总今天还没处理的东西：待确认任务、今天开过的圆桌讨论。
     """
     d = digest.build_today_digest()
     return render_template("today.html", digest=d)
@@ -1210,31 +1141,6 @@ def rag_analytics_detail(agent_name):
         query_count=len(log),
         recent_queries=list(reversed(log))[:20],
     )
-
-
-@app.route("/inbox/new", methods=["POST"])
-def inbox_new():
-    to = request.form.get("to", "").strip()
-    message = request.form.get("message", "").strip()
-
-    if not to or not message:
-        logger.warning(f"UI：新建留言表单缺字段（to={to!r}, message={message!r}），已拒绝")
-        return redirect(url_for("admin"))
-
-    # 单行硬约束——UI 层就该挡住，不要指望 dispatcher 兜底
-    if "\n" in message or "\r" in message:
-        message = message.replace("\r", " ").replace("\n", " ")
-        logger.warning("UI：留言内容包含换行，已自动压成单行（inbox.md 的硬约束：Message 必须单行）")
-
-    append_inbox_message(to, message)
-    return redirect(url_for("admin"))
-
-
-@app.route("/dispatcher/run", methods=["POST"])
-def dispatcher_run():
-    dry_run = request.form.get("mode") == "dry-run"
-    output = run_dispatcher(dry_run)
-    return render_admin(recent_log=output, just_ran=True, dry_run=dry_run)
 
 
 def _normalize_path_input(value: str) -> str:
