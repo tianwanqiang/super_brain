@@ -342,11 +342,13 @@
 <nav class="topnav">
   <a href="{{ url_for('index') }}" class="active">决策圆桌</a>
   <span class="sep">|</span>
-  <a href="{{ url_for('admin') }}">运维总览</a>
-  <a href="{{ url_for('autopublish_page') }}">自动发布</a>
-  <a href="{{ url_for('workflows_page') }}">内容工作流</a>
-  <a href="{{ url_for('today_digest') }}">今日待办</a>
   <a href="{{ url_for('private_chat_list') }}">专家私聊</a>
+  <a href="{{ url_for('today_digest') }}">今日待办</a>
+  <a href="{{ url_for('workflows_page') }}">内容工作流</a>
+  <a href="{{ url_for('autopublish_page') }}">自动发布</a>
+  <a href="{{ url_for('admin') }}">运维总览</a>
+  <a href="{{ url_for('config_page') }}">系统配置</a>
+  <a href="{{ url_for('rag_analytics') }}">RAG 看板</a>
 </nav>
 
 <button class="sidebar-toggle" id="sidebarToggle" aria-label="切换侧边栏">☰</button>

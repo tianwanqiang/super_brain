@@ -33,6 +33,7 @@ import agent_registry
 import autopublish
 import config_check
 import config_store
+import content_pipeline
 import digest
 import executors
 import i18n
@@ -1323,10 +1324,47 @@ def _autopublish_scheduler_loop() -> None:
             logger.exception("自动化发布调度 tick 异常（已捕获，不影响下一分钟）")
 
 
+_SOURCE_LABELS = {
+    "workflow": "内容工作流",
+    "content_studio": "内容创作台",
+    "manual": "手动创建",
+    "text": "文本素材",
+    "file": "文件素材",
+}
+
+
+def _make_order_snippet(text: str, limit: int = 120) -> str:
+    """从发布单正文提取纯文本摘要：去掉 markdown 标题/引用/分隔线，压成单行后截断。
+    让用户不点开预览就能从发布单直接看出内容主题。"""
+    if not text:
+        return ""
+    lines: list[str] = []
+    total = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#") or line.startswith(">") or line.startswith("---"):
+            continue
+        line = re.sub(r"[*_`]", "", line).strip()
+        if not line:
+            continue
+        lines.append(line)
+        total += len(line)
+        if total >= limit:
+            break
+    snippet = " ".join(lines)
+    return snippet[:limit] + ("…" if len(snippet) > limit else "")
+
+
 def _order_view(order: dict) -> dict:
+    source = order.get("source") or {}
+    kind = source.get("kind", "")
     return {
         "order": order,
         "summary": autopublish.order_summary(order),
+        "snippet": _make_order_snippet((source.get("text") or "").strip()),
+        "source_label": _SOURCE_LABELS.get(kind, kind),
         "json": json.dumps(order, ensure_ascii=False, indent=2),
     }
 
@@ -1347,6 +1385,9 @@ def autopublish_page():
         artifacts_dir=str(autopublish.ARTIFACTS_DIR),
         msg=session.pop("autopublish_msg", None),
         error=session.pop("autopublish_error", None),
+        studio_draft=_studio_draft,
+        studio_job=_studio_job_snapshot(),
+        studio_default_instruction=_STUDIO_DEFAULT_INSTRUCTION,
     )
 
 
@@ -1517,6 +1558,171 @@ def autopublish_order_cancel(order_id):
 def autopublish_order_delete(order_id):
     autopublish.delete_order(order_id)
     session["autopublish_msg"] = "发布单已删除。"
+    return redirect(url_for("autopublish_page"))
+
+
+# ==================== 内容创作台（上传文档 → 策划师+writer 成稿 → 推送为发布单） ====================
+# 两步流程：先"生成"——真实调用 DeepSeek（content-strategist 策划 → writer 成稿，约 1 分钟），
+# 结果落到 _studio_draft 供页面预览/手动修改；再"推送"——把预览里的标题/正文/渠道交给
+# autopublish.new_order 建发布单（物料自动生成），完全复用既有发布链路。
+# 生成走后台线程 + 独立 _studio_lock（不复用 _autopublish_lock，否则一次生成会卡住发布调度和
+# 其它按钮）；前端轮询 studio/status 拿进度，规避 LLM 调用阻塞请求（gunicorn WORKER TIMEOUT 前车之鉴）。
+
+_studio_lock = threading.Lock()
+_studio_job_active = False
+_studio_job_label = ""
+_studio_job_msg: str | None = None
+_studio_job_error: str | None = None
+_studio_draft: dict | None = None      # {title, draft, source_len, created_at}
+
+_STUDIO_SOURCE_MAX_BYTES = 200 * 1024  # 上传/粘贴素材上限，防超大文档撑爆内存与 prompt
+_STUDIO_DEFAULT_INSTRUCTION = (
+    "以 super_brain 第一人称写一篇技术日志博文，面向技术同行，"
+    "讲清概念原因与改进效果，语气克制。"
+)
+
+
+def _studio_job_snapshot() -> dict:
+    with _state_lock:
+        return {
+            "active": _studio_job_active,
+            "label": _studio_job_label,
+            "msg": _studio_job_msg,
+            "error": _studio_job_error,
+        }
+
+
+def _start_studio_action(label: str, fn, ok_msg: str | None) -> bool:
+    """把耗时成稿丢到后台线程，请求立刻返回；前端轮询 studio/status 拿进度。
+    结构照抄 _start_workflow_action，但用独立的 _studio_lock，与工作流/发布调度互不阻塞。"""
+    global _studio_job_active, _studio_job_label, _studio_job_msg, _studio_job_error
+    if _studio_lock.locked():
+        with _state_lock:
+            _studio_job_error = "已有内容创作台任务在执行，请稍候。"
+        return False
+
+    with _state_lock:
+        _studio_job_active = True
+        _studio_job_label = label
+        _studio_job_msg = None
+        _studio_job_error = None
+
+    def _worker():
+        global _studio_job_active, _studio_job_msg, _studio_job_error
+        try:
+            with _studio_lock:
+                fn()
+            with _state_lock:
+                _studio_job_msg = ok_msg
+        except Exception as exc:
+            logger.exception("内容创作台操作失败")
+            with _state_lock:
+                _studio_job_error = f"操作失败：{exc}"
+        finally:
+            with _state_lock:
+                _studio_job_active = False
+
+    threading.Thread(target=_worker, daemon=True).start()
+    return True
+
+
+def _studio_extract_source(req) -> tuple[str, str | None]:
+    """取素材文本：优先上传文件（doc），否则取粘贴框（source_text）。返回 (text, err)，
+    err 非空即校验失败，调用方直接提示、不发任务。文件按 utf-8 解码（errors=replace 容忍坏字节），
+    两条路径都做大小上限保护。"""
+    upload = req.files.get("doc") if req.files else None
+    if upload is not None and (upload.filename or "").strip():
+        raw = upload.read(_STUDIO_SOURCE_MAX_BYTES + 1)
+        if len(raw) > _STUDIO_SOURCE_MAX_BYTES:
+            return "", f"上传文档过大（上限约 {_STUDIO_SOURCE_MAX_BYTES // 1024}KB），请精简后重试。"
+        text = raw.decode("utf-8", errors="replace").strip()
+    else:
+        text = (req.form.get("source_text") or "").strip()
+        if len(text.encode("utf-8")) > _STUDIO_SOURCE_MAX_BYTES:
+            return "", f"粘贴内容过大（上限约 {_STUDIO_SOURCE_MAX_BYTES // 1024}KB），请精简后重试。"
+    if not text:
+        return "", "请先上传文档（.md/.txt）或粘贴素材内容，再生成博文。"
+    return text, None
+
+
+def _studio_run_generate(source_text: str, user_instruction: str, title_hint: str) -> None:
+    """后台线程里跑：加载 DeepSeek key → content_pipeline.run_writer_draft（策划师+writer，
+    真实两次 LLM 调用）→ 把 {title, draft} 落到 _studio_draft 供页面预览。"""
+    global _studio_draft
+    try:
+        api_key = llm_client.load_deepseek_api_key()
+    except llm_client.DeepSeekConfigError as exc:
+        raise ValueError(f"DeepSeek 未配置：{exc}")
+    result = content_pipeline.run_writer_draft(
+        source_text, api_key=api_key, user_instruction=user_instruction, title_hint=title_hint)
+    title = (result.get("title") or "").strip() or "内容创作台产出"
+    draft = (result.get("draft") or "").strip()
+    with _state_lock:
+        _studio_draft = {
+            "title": title,
+            "draft": draft,
+            "source_len": len(source_text),
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    logger.info(f"内容创作台：博文已生成，标题={title[:40]}，正文 {len(draft)} 字")
+
+
+@app.route("/admin/autopublish/studio/generate", methods=["POST"])
+def autopublish_studio_generate():
+    """第一步：校验素材 → 后台生成博文（不阻塞请求）。生成完前端轮询到 active=false 后 reload 出预览。"""
+    source_text, err = _studio_extract_source(request)
+    if err:
+        session["autopublish_error"] = err
+        return redirect(url_for("autopublish_page"))
+    user_instruction = (request.form.get("user_instruction") or "").strip() or _STUDIO_DEFAULT_INSTRUCTION
+    title_hint = (request.form.get("title_hint") or "").strip()
+
+    def _do():
+        _studio_run_generate(source_text, user_instruction, title_hint)
+
+    _start_studio_action("生成博文", _do, "博文已生成，在下方预览/修改后推送为发布单。")
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/studio/status")
+def autopublish_studio_status():
+    """前端轮询用：active=是否在生成、label=在做什么、msg/error=完成后要展示的结果。"""
+    return jsonify(_studio_job_snapshot())
+
+
+@app.route("/admin/autopublish/studio/publish", methods=["POST"])
+def autopublish_studio_publish():
+    """第二步：把预览区（可能已被手动改过）的标题/正文/勾选渠道推送为发布单。读 form 而非
+    _studio_draft，这样预览框里的编辑能生效；完全复用 autopublish.new_order + save_order 交接范式。"""
+    title = (request.form.get("title") or "").strip()
+    draft = (request.form.get("draft") or "").strip()
+    channels = [c for c in request.form.getlist("channels") if c in autopublish.CHANNELS]
+    if not title:
+        session["autopublish_error"] = "标题不能为空。"
+        return redirect(url_for("autopublish_page"))
+    if not draft:
+        session["autopublish_error"] = "正文不能为空。"
+        return redirect(url_for("autopublish_page"))
+    if not channels:
+        session["autopublish_error"] = "至少勾选一个发布渠道。"
+        return redirect(url_for("autopublish_page"))
+    order = autopublish.new_order(
+        title, {"kind": "content_studio", "text": draft[:20000]}, channels,
+        note="内容创作台产出")
+    autopublish.save_order(order)
+    logger.info(f"内容创作台：推送为发布单 {order['id']}（渠道 {sorted(order['channels'])}）")
+    session["autopublish_msg"] = (
+        f"已推送为发布单：{order['id']}（物料已自动生成）。下一步：审阅后批准发布。")
+    return redirect(url_for("autopublish_page"))
+
+
+@app.route("/admin/autopublish/studio/clear", methods=["POST"])
+def autopublish_studio_clear():
+    """清空当前预览草稿，重新开始。"""
+    global _studio_draft
+    with _state_lock:
+        _studio_draft = None
+    session["autopublish_msg"] = "已清除创作台草稿。"
     return redirect(url_for("autopublish_page"))
 
 
