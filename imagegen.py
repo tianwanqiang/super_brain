@@ -18,7 +18,7 @@ super_brain imagegen - 公众号封面图生成与公网链接（MVP）
 import hashlib
 import struct
 import zlib
-from datetime import datetime
+from log_setup import Clock
 from pathlib import Path
 
 import config_store
@@ -59,7 +59,7 @@ def generate_cover(title: str = "", slug: str = "") -> Path:
     """生成一张封面 PNG 并落盘到 static/covers/，返回本地文件路径。"""
     COVERS_DIR.mkdir(parents=True, exist_ok=True)
     safe = "".join(c for c in (slug or title or "cover") if c.isalnum() or c in "-_")[:40] or "cover"
-    filename = f"cover_{datetime.now():%Y%m%d_%H%M%S}_{safe}.png"
+    filename = f"cover_{Clock.now():%Y%m%d_%H%M%S}_{safe}.png"
     path = COVERS_DIR / filename
 
     top, bottom = _title_colors(title)

@@ -1,5 +1,10 @@
 pyyaml>=6.0
 flask>=3.0
+# 统一定时调度：替代原来三个每分钟 sleep(60) 轮询线程（daily_batch/autopublish/workflow）。
+# 用 cron 表达式 + 一次性 DateTrigger 精确到点触发，自带 misfire 补偿/合并、重启恢复。
+# 锁 3.x 稳定版——4.0 至今仍是预发布、官方明确不建议生产使用、API 大改。
+# 纯 Python 轻量库、无 C 扩展，不会重蹈 torch 把 1.9G 内存服务器挤到 OOM 的覆辙。
+apscheduler==3.10.4
 
 # RAG 检索基础设施——2026-09-03 从本地嵌入模型（sentence-transformers/torch）换成阿里云
 # DashScope（文本向量化）+ DashVector（向量数据库），原因：服务器只有 1.9G 内存，torch

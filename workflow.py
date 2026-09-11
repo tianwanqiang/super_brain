@@ -18,8 +18,8 @@ requires_approval 决定（可配，默认要）；最后一步把定稿交接�
 - 步骤处理器是确定性的函数表 step_handlers（agent 名 → 函数），真实调用 content_pipeline
   （researcher/writer/critic 会花 DeepSeek/Tavily 额度，只在执行那一刻发生）；
   测试用 monkeypatch 换假 handler，离线验证状态机。
-- 调度：scheduler_tick() 每分钟由 ui_app 后台线程调用——到点且当天还没为这个 workflow
-  开过 run 就 create_run + 自动推进第一步。
+- 调度：由 scheduler.py 的 APScheduler 按每个 workflow 的 schedule.time 注册 cron job，
+  到点调 run_scheduled_once()——当天还没为这个 workflow 开过 run 就 create_run + 自动推进第一步。
 """
 import json
 import logging
@@ -33,6 +33,7 @@ import content_pipeline
 import llm_client
 import mailer
 from agent_registry import load_agent_registry, load_private_context
+from log_setup import Clock
 from paths import CONFIG_PATH, WORKFLOW_RUNS_DIR
 
 logger = logging.getLogger("super_brain.workflow")
@@ -82,11 +83,11 @@ DEFAULT_WORKFLOWS = {
 
 
 def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return Clock.stamp()
 
 
 def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return Clock.today()
 
 
 # ---------- 定义（config.json 的 CONTENT_WORKFLOWS） ----------
@@ -159,7 +160,7 @@ def create_run(workflow_id: str, topic: str = "", source_text: str = "",
     direction：本次运行的"运营方向预设"（定时触发时从定义带下来，供选题提案参考）。"""
     workflows = load_workflows()
     definition = workflows.get(workflow_id) or DEFAULT_WORKFLOWS[DEFAULT_WORKFLOW_ID]
-    run_id = f"wf_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
+    run_id = f"wf_{Clock.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
     run = {
         "run_id": run_id,
         "workflow_id": workflow_id,
@@ -324,7 +325,7 @@ def _handle_publish(ctx: dict) -> dict:
     final_text = ((prev or {}).get("payload") or "").strip() or (ctx.get("source_text") or "").strip()
     if not final_text:
         raise ValueError("publish 步骤没有可交接的定稿")
-    title = (prev or {}).get("title") or "工作流产出" + datetime.now().strftime(" %m-%d")
+    title = (prev or {}).get("title") or "工作流产出" + Clock.now().strftime(" %m-%d")
     order = autopublish.new_order(
         title,
         {"kind": "workflow", "text": final_text, "workflow_run_id": ctx["run"]["run_id"]},
@@ -616,13 +617,36 @@ def edit_run_fields(run_id: str, topic: str | None = None, direction: str | None
 
 # ---------- 调度（定时：到点先跑第一步，等审批再往下） ----------
 
+def run_scheduled_once(wf_id: str, today: str | None = None) -> str | None:
+    """到点为某个 workflow 开一次当天的 run：当天还没开过就 create_run + advance
+    （第一步产出后通常停在审批口等人点通过），返回 run_id；今天已开过 / 该 workflow
+    不存在或已停用，返回 None。
+
+    **不做时间匹配**——"到没到点"由 scheduler.py 的 APScheduler cron 判断，本函数只负责
+    "当天去重 + 开跑"，这样轮询时代和调度器时代共用同一份去重逻辑。
+    scheduler_tick（下）和 scheduler._job_workflow 都调它。"""
+    today = today or Clock.today()
+    definition = load_workflows().get(wf_id)
+    if not definition or not (definition.get("schedule") or {}).get("enabled"):
+        return None
+    runs = load_all_runs()
+    if any(r["workflow_id"] == wf_id and r.get("scheduled_date") == today for r in runs):
+        return None  # 今天已经为这个 workflow 开过 run，不再重复
+    run = create_run(wf_id, scheduled_date=today,
+                     direction=(definition.get("direction") or ""))
+    advance(run["run_id"])
+    logger.info(f"[workflow] 定时触发 {wf_id}：run={run['run_id']}，"
+                f"第一步已执行，当前停在审批口等人工通过")
+    return run["run_id"]
+
+
 def scheduler_tick(now: datetime | None = None) -> list[str]:
-    """每分钟由 ui_app 后台线程调用：每个 enabled 且到点的 workflow，当天还没开过 run
-    就 create_run + advance（第一步产出后通常停在审批口等你点通过）。"""
-    now = now or datetime.now()
+    """轮询时代的入口（现由 scheduler.py 的 APScheduler cron 取代，保留是为了兼容旧测试/
+    旧调用）：命中每个 enabled 且"正好到点"的 workflow，交给 run_scheduled_once 做当天去重
+    + 开跑。返回本轮真正开跑的 wf_id 列表。"""
+    now = now or Clock.now()
     today = now.strftime("%Y-%m-%d")
     started: list[str] = []
-    runs = load_all_runs()
     for wf_id, definition in load_workflows().items():
         schedule = definition.get("schedule") or {}
         if not schedule.get("enabled"):
@@ -633,15 +657,9 @@ def scheduler_tick(now: datetime | None = None) -> list[str]:
                 continue
         except (ValueError, AttributeError):
             continue
-        if any(r["workflow_id"] == wf_id and r.get("scheduled_date") == today for r in runs):
-            continue  # 今天已经为这个 workflow 开过 run，不再重复
         try:
-            run = create_run(wf_id, scheduled_date=today,
-                             direction=(definition.get("direction") or ""))
-            advance(run["run_id"])
-            started.append(wf_id)
-            logger.info(f"[workflow] 定时触发 {wf_id}：run={run['run_id']}，"
-                        f"第一步已执行，当前停在审批口等人工通过")
+            if run_scheduled_once(wf_id, today=today):
+                started.append(wf_id)
         except Exception:
             logger.exception(f"[workflow] 定时触发 {wf_id} 失败（不影响其它 workflow）")
     return started

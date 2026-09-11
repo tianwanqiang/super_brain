@@ -25,7 +25,7 @@ content_pipeline_eval - agent 技能水平评估 CLI（真实模型，用户自�
 import json
 import sys
 import time
-from datetime import datetime
+from log_setup import Clock
 from pathlib import Path
 
 try:
@@ -37,7 +37,7 @@ import content_pipeline as cp
 
 
 def _ts() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Clock.now().strftime("%Y%m%d_%H%M%S")
 
 
 def _out_dir(tag: str) -> Path:

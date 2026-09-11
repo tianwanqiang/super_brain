@@ -11,7 +11,7 @@ super_brain tasks - 项目进度管理的轻量存储
                           -> rejected（CEO 否掉这条）
 """
 import logging
-from datetime import datetime
+from log_setup import Clock
 
 import yaml
 
@@ -44,7 +44,7 @@ def add_tasks_from_decision(conversation_id: str, question: str, decision: dict)
     每轮的结论都各自落地成新任务，任务本身通过 conversation_id 可以追溯到源头讨论。
     """
     tasks = load_tasks()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = Clock.now().strftime("%Y-%m-%d %H:%M")
     existing_ids = {t["id"] for t in tasks}
     new_tasks = []
     for i, step in enumerate(decision.get("steps") or []):
@@ -85,7 +85,7 @@ def update_task_status(task_id: str, status: str, artifact_path: str | None = No
     for task in tasks:
         if task["id"] == task_id:
             task["status"] = status
-            task["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            task["updated_at"] = Clock.now().strftime("%Y-%m-%d %H:%M")
             if artifact_path is not None:
                 task["artifact_path"] = artifact_path
             save_tasks(tasks)

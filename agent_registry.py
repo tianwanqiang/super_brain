@@ -6,7 +6,7 @@ super_brain agent_registry - "有哪些合法 agent、各自的知识框架是�
 """
 import logging
 import os
-from datetime import datetime
+from log_setup import Clock
 from pathlib import Path
 
 import yaml
@@ -84,7 +84,7 @@ def log_execution(agent_name: str, action: str, detail: str, status: str = "ok")
             f"仅供以后定期复盘（机制 2）参考，不会自动改 private.md。\n\n",
             encoding="utf-8",
         )
-    now = datetime.now()
+    now = Clock.now()
     status_tag = "✓" if status == "ok" else "✗"
     entry = f"## {now:%Y-%m-%d %H:%M} · {action} [{status_tag} {status}]\n{detail.strip()}\n\n"
     with lessons_path.open("a", encoding="utf-8") as f:
@@ -124,7 +124,7 @@ def log_artifact_feedback(agent_name: str, task_description: str, artifact_path:
             except OSError:
                 logger.warning(f"反馈记录时读取产物文件失败，跳过内容片段：{artifact_file}")
 
-    now = datetime.now()
+    now = Clock.now()
     entry = (
         f"## {now:%Y-%m-%d %H:%M} · 人工反馈：产物质量问题\n"
         f"任务：{task_description}\n"

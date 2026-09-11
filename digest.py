@@ -9,11 +9,11 @@ super_brain digest - "今日待你关注的事项"清单 + 每日批量汇总
   不应该被"打开页面"这种高频动作触发，只应该被真正的每日一次调度触发。
 """
 import logging
-from datetime import datetime
 from pathlib import Path
 
 import roundtable
 import tasks
+from log_setup import Clock
 from paths import OPC_ROOT, SUPER_BRAIN
 
 logger = logging.getLogger("super_brain.digest")
@@ -25,7 +25,7 @@ def build_today_digest() -> dict:
     """零成本聚合——只读 tasks.yaml / conversations/*.json，不调用任何 LLM。
     是"主动触发层"的核心：CEO 打开页面就能看到"今天有什么需要我看"，不用自己想起来去问。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = Clock.today()
 
     pending = tasks.pending_tasks()
 
@@ -81,7 +81,7 @@ def run_daily_batch(date: str | None = None, api_key: str | None = None) -> Path
     （如果当天 opc 笔记存在的话），调用方自己负责"今天是否已经跑过"这个判断
     （见 ui_app.py 里的调度线程实现）。
     """
-    now = datetime.now()
+    now = Clock.now()
     date = date or f"{now.month}_{now.day}"  # opc 文件用的日期格式：{月}_{日}
     display_date = now.strftime("%Y-%m-%d")
 

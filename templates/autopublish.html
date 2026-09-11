@@ -17,6 +17,7 @@
   .pill-drafted { background: #fdecd2; color: #a35b00; }
   .pill-approved { background: #e0f0ef; color: #0e6e76; }
   .pill-published { background: #dcefe0; color: #1e7a3c; }
+  .pill-draft_pushed { background: #e0eef5; color: #1a5f7a; }
   .pill-needs_manual { background: #ece1f7; color: #6b3fa0; }
   .pill-failed { background: #fbe3e0; color: #b3402f; }
   .pill-skipped, .pill-cancelled { background: #eee; color: #777; }
@@ -132,7 +133,7 @@
           {% endfor %}
         </td>
       </tr>
-      <tr><td>计划发布时间</td><td><input type="time" name="publish_at"> <span class="muted">可留空（跟随"发布"事件/按钮）</span></td></tr>
+      <tr><td>计划发布时间</td><td><input type="time" name="publish_at"> <span class="muted">填了则放行后到点自动推该单（东八区，过点不补推）；留空跟随“发布”事件/按钮</span></td></tr>
     </table>
     <button type="submit">创建发布单</button>
   </form>
@@ -257,6 +258,8 @@
         </form>
         {% elif st.status == 'approved' %}
         <span class="muted">已放行（{{ st.approved_at }}），等调度发布</span>
+        {% elif st.status == 'draft_pushed' %}
+        <span class="muted">已进公众号草稿箱（{{ st.published_at }}）——个人号到此为止，去微信后台确认后群发</span>
         {% endif %}
       </td>
     </tr>

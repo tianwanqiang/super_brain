@@ -9,6 +9,7 @@ import json
 import pytest
 
 import autopublish
+import publishers
 
 
 @pytest.fixture
@@ -136,12 +137,40 @@ def test_unapproved_channel_never_dispatched(env):
     assert results["toutiao"]["status"] == "skipped"  # 未放行：硬规则不动
 
 
-def test_wechat_api_mode_without_draft_media_fails_cleanly(env):
-    """mode=api 但订单里没有 draft_media_id → failed + error 详情，不许假装发布。"""
+def test_wechat_api_mode_pushes_to_draft_box(env, monkeypatch):
+    """未认证个人号：mode=api 到点走"推公众号草稿箱"，成功置 draft_pushed（不是 published），
+    并把 draft_media_id 落进 artifact/platform_ref。真实微信/DeepSeek 调用被隔离掉。"""
     write_config(env, master=True, channels={
         "wechat": {"mode": "api"}, "toutiao": {"mode": "manual"}, "video": {"mode": "manual"}})
     order = make_order(env)
     autopublish.approve_channel(order["id"], "wechat")
+
+    def fake_push(o, st):
+        st["artifact"] = st.get("artifact") or {}
+        st["artifact"]["draft_media_id"] = "FAKE_MEDIA_ID"
+        st["status"] = autopublish.CH_DRAFT_PUSHED
+        st["platform_ref"] = "FAKE_MEDIA_ID"
+        return "FAKE_MEDIA_ID"
+
+    monkeypatch.setattr(autopublish, "_push_wechat_draft", fake_push)
+    results = autopublish.dispatch_order(autopublish.load_order(order["id"]), force=True)
+    assert results["wechat"]["status"] == "draft_pushed"
+    loaded = autopublish.load_order(order["id"])
+    assert loaded["channels"]["wechat"]["status"] == "draft_pushed"
+    assert loaded["channels"]["wechat"]["artifact"]["draft_media_id"] == "FAKE_MEDIA_ID"
+
+
+def test_wechat_api_mode_push_failure_marks_failed(env, monkeypatch):
+    """mode=api 推草稿失败（如没配 WECHAT_* 凭据）→ failed + error 详情，绝不假装成功。"""
+    write_config(env, master=True, channels={
+        "wechat": {"mode": "api"}, "toutiao": {"mode": "manual"}, "video": {"mode": "manual"}})
+    order = make_order(env)
+    autopublish.approve_channel(order["id"], "wechat")
+
+    def boom(o, st):
+        raise publishers.PublishError("缺少 WECHAT_APP_ID / WECHAT_APP_KEY 凭据")
+
+    monkeypatch.setattr(autopublish, "_push_wechat_draft", boom)
     results = autopublish.dispatch_order(autopublish.load_order(order["id"]), force=True)
     assert results["wechat"]["status"] == "failed"
     loaded = autopublish.load_order(order["id"])

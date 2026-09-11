@@ -23,7 +23,6 @@ import json
 import logging
 import re
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import config_store
@@ -39,7 +38,7 @@ from llm_client import (
     load_deepseek_api_key,
     load_tavily_api_key,
 )
-from log_setup import configure_logging
+from log_setup import Clock, configure_logging
 from paths import AGENTS_DIR, CONFIG_PATH, SUPER_BRAIN
 from tasks import add_tasks_from_decision
 
@@ -183,7 +182,7 @@ def append_lessons(agent_name: str, question: str, reflection: str) -> None:
             f"参考，不会自动合并进 private.md——是否采纳、怎么改规则，需要人工审核决定。\n\n",
             encoding="utf-8",
         )
-    now = datetime.now()
+    now = Clock.now()
     entry = f"## {now:%Y-%m-%d %H:%M} · 问题：{question}\n{reflection.strip()}\n\n"
     with lessons_path.open("a", encoding="utf-8") as f:
         f.write(entry)
@@ -306,7 +305,7 @@ def write_meeting_minutes(question: str, agent_names: list[str],
     title = lines[0].strip().lstrip("#").strip() or "会议纪要"
     slug = re.sub(r"[^\w一-鿿-]", "-", title)[:40].strip("-") or "untitled"
 
-    now = datetime.now()
+    now = Clock.now()
     filename = f"{now:%Y-%m-%d}_{now:%H%M}_{slug}.md"
     out_dir = Path(minutes_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -322,7 +321,7 @@ def _conversation_path(conversation_id: str) -> Path:
 
 
 def _new_conversation_id(question: str) -> str:
-    now = datetime.now()
+    now = Clock.now()
     slug = re.sub(r"[^\w一-鿿-]", "-", question)[:30].strip("-") or "untitled"
     return f"{now:%Y-%m-%d_%H%M%S}_{slug}"
 
@@ -332,7 +331,7 @@ def create_conversation(agent_names: list[str], question: str) -> str:
     生成一个互相无关的独立记录。"""
     CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
     conversation_id = _new_conversation_id(question)
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = Clock.now().strftime("%Y-%m-%d %H:%M")
     data = {
         "id": conversation_id,
         "title": question[:40],
@@ -377,7 +376,7 @@ def append_turn(conversation_id: str, turn: dict) -> None:
         if name not in existing_agents:
             existing_agents.append(name)
     data["agents"] = existing_agents
-    data["updated_at"] = turn.get("timestamp", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    data["updated_at"] = turn.get("timestamp", Clock.now().strftime("%Y-%m-%d %H:%M"))
     _conversation_path(conversation_id).write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -435,7 +434,7 @@ def ask_agent_mention(conversation_id: str, agent_name: str, message: str) -> di
         logger.exception(f"@ {agent_name} 单独提问失败")
         raise
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = Clock.now().strftime("%Y-%m-%d %H:%M")
     record = {
         "agent": agent_name,
         "message": message,
@@ -501,7 +500,7 @@ def _migrate_legacy_roundtable_log() -> None:
         )
         count += 1
     migrated_marker.write_text(
-        f"迁移完成：{count} 条老记录转成独立会话，{datetime.now():%Y-%m-%d %H:%M}\n", encoding="utf-8"
+        f"迁移完成：{count} 条老记录转成独立会话，{Clock.now():%Y-%m-%d %H:%M}\n", encoding="utf-8"
     )
     logger.info(f"roundtable_log 迁移完成：{count} 条老记录 -> conversations/")
 
@@ -706,7 +705,7 @@ def run_roundtable(agent_names: list[str], question: str, conversation_id: str |
         "decision": decision,
         "task_ids": [t["id"] for t in new_tasks],
         "minutes_path": str(minutes_path) if minutes_path else None,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "timestamp": Clock.now().strftime("%Y-%m-%d %H:%M"),
     }
     append_turn(conversation_id, turn)
     if stream_queue is not None:

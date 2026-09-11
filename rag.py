@@ -27,7 +27,7 @@ import json
 import logging
 import re
 import urllib.request
-from datetime import datetime
+from log_setup import Clock
 from pathlib import Path
 
 import config_store
@@ -314,7 +314,7 @@ def _log_retrieval(agent_name: str, query: str, results: list[dict]) -> None:
     log_path = _retrieval_log_path(agent_name)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": Clock.now().strftime("%Y-%m-%d %H:%M:%S"),
         "query": query,
         "hits": [{"rule_no": r["rule_no"], "section": r["section"], "similarity": r["similarity"]} for r in results],
     }

@@ -9,7 +9,7 @@ video_prompt_conversations/{id}.json，格式类似标准的 chat messages 数�
 import json
 import logging
 import re
-from datetime import datetime
+from log_setup import Clock
 from pathlib import Path
 
 from agent_registry import load_agent_registry, load_private_context, log_execution
@@ -31,7 +31,7 @@ def _conversation_path(conversation_id: str) -> Path:
 
 def create_conversation(first_message: str) -> str:
     CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
+    now = Clock.now()
     slug = re.sub(r"[^\w一-鿿-]", "-", first_message)[:30].strip("-") or "untitled"
     conversation_id = f"{now:%Y-%m-%d_%H%M%S}_{slug}"
     data = {
@@ -102,7 +102,7 @@ def send_message(conversation_id: str, user_message: str) -> dict:
         "不要每次都重新生成一份无关的新提示词。"
     )
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = Clock.now().strftime("%Y-%m-%d %H:%M")
     data["messages"].append({"role": "user", "content": user_message, "timestamp": now})
 
     messages = [{"role": "system", "content": system_prompt}] + [
@@ -114,7 +114,7 @@ def send_message(conversation_id: str, user_message: str) -> dict:
         logger.exception("video-prompt 生成回复失败")
         raise
 
-    now2 = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now2 = Clock.now().strftime("%Y-%m-%d %H:%M")
     data["messages"].append({"role": "assistant", "content": reply, "timestamp": now2})
     data["updated_at"] = now2
     _conversation_path(conversation_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

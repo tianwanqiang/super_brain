@@ -13,7 +13,7 @@ super_brain review - 机制 2：定期复盘
 """
 import logging
 import re
-from datetime import datetime
+from log_setup import Clock
 from pathlib import Path
 
 from agent_registry import load_agent_registry, load_private_context
@@ -98,7 +98,7 @@ def generate_review_suggestion(agent_name: str, api_key: str) -> Path:
 
     reviews_dir = _reviews_dir(agent_name)
     reviews_dir.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
+    now = Clock.now()
     out_path = reviews_dir / f"{now:%Y-%m-%d_%H%M}.md"
     out_path.write_text(
         f"# {agent_name} 定期复盘建议 · {now:%Y-%m-%d %H:%M}\n\n{suggestion}\n", encoding="utf-8",
@@ -131,7 +131,7 @@ def apply_review(agent_name: str, review_path: str) -> None:
         raise ReviewError(f"private.md 不存在：{private_path}")
 
     suggestion_text = path.read_text(encoding="utf-8-sig")
-    now = datetime.now()
+    now = Clock.now()
     addition = f"\n\n## 定期复盘建议 · 采纳于 {now:%Y-%m-%d %H:%M}\n\n{suggestion_text}\n"
     with private_path.open("a", encoding="utf-8") as f:
         f.write(addition)

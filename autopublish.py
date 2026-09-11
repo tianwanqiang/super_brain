@@ -16,8 +16,9 @@ writer / video-prompt / ops-assistant）项目里已经有了；这里补的是"
 - 物料在创建发布单时自动生成（文本定稿 / mock 视频清单），无需手动触发。
 - 视频生成默认走 mock provider（零成本、落一个 manifest 占位），真实生成 API
   （火山方舟 Seedance 等）以后按 VIDEO_GENERATORS 注册表插进来，配好 key 才生效。
-- 渠道发布默认 mock/manual；真实发布 API 只接入了公众号 freepublish（publishers.py），
-  且只在渠道 mode='api' + 全局开关都打开时才真的对外发布。
+- 渠道发布默认 mock/manual；wechat 渠道 mode='api' 时到点自动"推公众号草稿箱"（AI 排版 +
+  封面 + 微信草稿 API），成功置 draft_pushed。未认证个人号只能到草稿箱为止——进草稿箱
+  ≠ 对外发布（freepublish 需认证号，代码保留在 publishers.publish_wechat_article 备用）。
 
 本模块不 import executors（executors.py 反过来 import 本模块做 executor 注册），避免循环依赖。
 """
@@ -31,6 +32,7 @@ from pathlib import Path
 import config_store
 import publishers
 from agent_registry import load_agent_registry, log_execution
+from log_setup import Clock
 from paths import (
     AUTOPUBLISH_ARTIFACTS_DIR,
     AUTOPUBLISH_QUEUE_DIR,
@@ -50,29 +52,29 @@ CH_QUEUED = "queued"          # 入池，还没生产物料
 CH_DRAFTED = "drafted"        # 物料已生成，等人审
 CH_APPROVED = "approved"      # CEO 已放行，可以发布
 CH_PUBLISHING = "publishing"  # 正在调发布接口
-CH_PUBLISHED = "published"    # 已发布
+CH_PUBLISHED = "published"    # 已对外发布（认证号 freepublish 成功；未认证个人号用不到）
+CH_DRAFT_PUSHED = "draft_pushed"  # 已推进公众号草稿箱（个人号自动发布终点：进草稿箱≠对外发布）
 CH_NEEDS_MANUAL = "needs_manual"  # 该渠道没有可用的自动发布能力，需要人工发布
 CH_FAILED = "failed"          # 尝试过但失败（保留 error 详情）
 CH_SKIPPED = "skipped"        # CEO 或 planner 决定这个渠道不发
 CH_CANCELLED = "cancelled"    # 订单被取消
 
 VALID_CHANNEL_STATUSES = {
-    CH_QUEUED, CH_DRAFTED, CH_APPROVED, CH_PUBLISHING, CH_PUBLISHED,
+    CH_QUEUED, CH_DRAFTED, CH_APPROVED, CH_PUBLISHING, CH_PUBLISHED, CH_DRAFT_PUSHED,
     CH_NEEDS_MANUAL, CH_FAILED, CH_SKIPPED, CH_CANCELLED,
 }
 
 # 渠道注册表：capabilities 描述这个渠道在"当前代码"里真实具备的能力
 #   draft_file    能生成本地定稿文件（零成本）
-#   wechat_draft  能调真实微信 API 建公众号草稿（需要 WECHAT_* 凭据）
-#   freepublish   能调公众号发布接口对外发布（需要认证账号 + 渠道 mode='api'）
+#   wechat_draft  能调真实微信 API 建公众号草稿（需要 WECHAT_* 凭据）——个人号自动发布的终点
 #   video_mock    视频只能走 mock 占位（真实生成 provider 未接入前）
 # 说明字段给后台页面展示"这条渠道现在到底能做到哪一步"用，防止误以为 mock 就是真发布。
 CHANNELS: dict[str, dict] = {
     "wechat": {
         "label": "微信公众号",
-        "capabilities": ["draft_file", "wechat_draft", "freepublish"],
-        "publish_note": "自动对外发布=调 freepublish 接口。仅已开通发布能力的认证公众号可用，"
-                        "且有每日次数限制；需渠道 mode='api' + 主开关 + CEO 放行三者同时满足。",
+        "capabilities": ["draft_file", "wechat_draft"],
+        "publish_note": "mode='api' 到点自动推公众号草稿箱（AI 排版+封面+微信草稿 API），成功=draft_pushed。"
+                        "未认证个人号只能到草稿箱为止，进草稿箱≠对外发布；需 mode='api' + 主开关 + CEO 放行。",
     },
     "toutiao": {
         "label": "头条号",
@@ -91,7 +93,7 @@ CHANNELS: dict[str, dict] = {
 # 渠道配置只有一个字段 mode（语义集中在一处，别再造冗余开关）：
 #   manual —— 没有可用的自动发布执行器，发布时如实标记 needs_manual，等 CEO 人工发布
 #   mock   —— 模拟发布（占位演示，不产生任何真实外部动作）
-#   api    —— 走真实发布接口（目前只有 wechat 接入了 freepublish）
+#   api    —— 走真实接口（wechat=推公众号草稿箱；个人号到草稿箱为止，不做对外 freepublish）
 DEFAULT_CHANNEL_CONF = {
     "wechat": {"mode": "manual"},
     "toutiao": {"mode": "manual"},
@@ -118,11 +120,11 @@ CONFIG_KEY = "AUTOPUBLISH"
 # ---- 通用工具 ----
 
 def _now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return Clock.stamp()
 
 
 def _ts_id() -> str:
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    return Clock.now().strftime("%Y%m%d_%H%M%S")
 
 
 def load_full_config() -> dict:
@@ -346,7 +348,7 @@ def cancel_order(order_id: str, reason: str) -> dict:
     if order is None:
         raise ValueError(f"发布单不存在：{order_id}")
     for st in order["channels"].values():
-        if st["status"] not in (CH_PUBLISHED, CH_PUBLISHING):
+        if st["status"] not in (CH_PUBLISHED, CH_DRAFT_PUSHED, CH_PUBLISHING):
             st["status"] = CH_CANCELLED
     _append_history(order, "coordinator", "取消发布单", reason or "（未填原因）")
     save_order(order)
@@ -358,8 +360,12 @@ def order_summary(order: dict) -> str:
     statuses = [st["status"] for st in order["channels"].values()]
     if not statuses:
         return CH_CANCELLED
-    if all(s in (CH_PUBLISHED, CH_SKIPPED, CH_CANCELLED) for s in statuses):
-        return "published" if CH_PUBLISHED in statuses else CH_CANCELLED
+    if all(s in (CH_PUBLISHED, CH_DRAFT_PUSHED, CH_SKIPPED, CH_CANCELLED) for s in statuses):
+        if CH_PUBLISHED in statuses:
+            return "published"
+        if CH_DRAFT_PUSHED in statuses:
+            return CH_DRAFT_PUSHED
+        return CH_CANCELLED
     if any(s == CH_PUBLISHING for s in statuses):
         return "publishing"
     if any(s == CH_FAILED for s in statuses):
@@ -375,25 +381,19 @@ def order_summary(order: dict) -> str:
     return CH_QUEUED
 
 
-def run_draft_wechat_push(order_id: str) -> dict:
-    """把某个发布单的公众号正文推成真实公众号草稿（调 publishers.publish_wechat_draft）。
-    这是真实外部动作（微信草稿箱里会多一篇草稿），所以只由后台按钮显式触发，不进自动调度。
-    需要 config.json 配好 WECHAT_* 凭据。排版走 adapt_draft_to_wechat（AI 排版，跟
-    ops-assistant 路径一致），不再用纯文本包 <p> 的骨架版。"""
-    order = load_order(order_id)
-    if order is None:
-        raise ValueError(f"发布单不存在：{order_id}")
-    st = order["channels"].get("wechat")
-    if st is None:
-        raise ValueError(f"发布单 {order_id} 没启用公众号渠道")
+def _push_wechat_draft(order: dict, st: dict) -> str:
+    """把发布单的公众号正文推成真实公众号草稿：AI 排版(adapt_draft_to_wechat) + 封面
+    (ensure_wechat_cover) + 微信草稿 API(publish_wechat_draft)。成功后把渠道状态置为
+    draft_pushed（已进草稿箱），并把 draft_media_id 存进 artifact / platform_ref。返回 media_id。
+
+    这是真实外部动作（微信草稿箱里会多一篇草稿），需要 config.json 配好 WECHAT_* 凭据 +
+    DeepSeek key（AI 排版用）。未认证个人号只能到草稿箱为止——进草稿箱≠对外发布。
+    两个调用方：后台"推送草稿箱"按钮（run_draft_wechat_push）、mode='api' 的定时 dispatch。"""
     artifact = st.get("artifact") or {}
     raw_text = ""
     if artifact.get("path") and Path(artifact["path"]).exists():
         raw = Path(artifact["path"]).read_text(encoding="utf-8-sig")
-        if "---" in raw:
-            raw_text = raw.split("---", 1)[1].strip()
-        else:
-            raw_text = raw.strip()
+        raw_text = raw.split("---", 1)[1].strip() if "---" in raw else raw.strip()
     if not raw_text:
         raw_text = ((order.get("source") or {}).get("text") or "").strip()
     if not raw_text:
@@ -409,14 +409,31 @@ def run_draft_wechat_push(order_id: str) -> dict:
     if cover_path:
         artifact["cover_path"] = str(cover_path)
     artifact["cover_url"] = cover_url
-    st["artifact"] = artifact
     result = publishers.publish_wechat_draft(title, html, cover_url=cover_url)
-    st["artifact"]["draft_media_id"] = result["draft_media_id"]
-    _ch_log(order, "wechat", f"已推送到公众号草稿箱：draft_media_id={result['draft_media_id']}")
-    _append_history(order, "media-maker", "推送公众号草稿", result["draft_media_id"])
+    media_id = result["draft_media_id"]
+    artifact["draft_media_id"] = media_id
+    st["artifact"] = artifact
+    st["status"] = CH_DRAFT_PUSHED
+    st["published_at"] = _now_str()
+    st["platform_ref"] = media_id
+    _ch_log(order, "wechat", f"已推送到公众号草稿箱：draft_media_id={media_id}")
+    return media_id
+
+
+def run_draft_wechat_push(order_id: str) -> dict:
+    """后台"推送到公众号草稿箱"按钮入口：显式触发一次真实推草稿（不要求 CEO 放行/主开关，
+    因为是人工点了按钮）。需要 WECHAT_* 凭据。成功返回 {"draft_media_id": ...}。"""
+    order = load_order(order_id)
+    if order is None:
+        raise ValueError(f"发布单不存在：{order_id}")
+    st = order["channels"].get("wechat")
+    if st is None:
+        raise ValueError(f"发布单 {order_id} 没启用公众号渠道")
+    media_id = _push_wechat_draft(order, st)
+    _append_history(order, "media-maker", "推送公众号草稿", media_id)
     save_order(order)
-    log_execution("media-maker", "推送公众号草稿", f"发布单 {order_id}：{result}")
-    return result
+    log_execution("media-maker", "推送公众号草稿", f"发布单 {order_id}：draft_media_id={media_id}")
+    return {"draft_media_id": media_id}
 
 
 # ---- 动作：dispatch（发布执行 = publisher） ----
@@ -431,30 +448,19 @@ def _due_now(order: dict, now: datetime | None = None) -> bool:
         target = datetime.strptime(plan_at, "%H:%M").time()
     except ValueError:
         return True  # 配错了就当不限制，别把订单卡死
-    now = now or datetime.now()
+    now = now or Clock.now()
     cur = now.time().replace(second=0, microsecond=0)
     low = (datetime.combine(dtime.min, target) - timedelta(minutes=5)).time()
     high = (datetime.combine(dtime.min, target) + timedelta(minutes=5)).time()
     return low <= cur <= high
 
 
-def _publish_wechat(order: dict, st: dict) -> str:
-    """真实公众号发布：把草稿 draft_media_id 通过 freepublish 发布出去。
-    前置：公众号草稿 media_id 存在 + 渠道 mode='api'。失败抛 publishers.PublishError。"""
-    media_id = (st.get("artifact") or {}).get("draft_media_id")
-    if not media_id:
-        raise publishers.PublishError(
-            "公众号没有草稿 media_id（先在后台点'推送到公众号草稿箱'，或把已有草稿 media_id 填进来）"
-        )
-    res = publishers.publish_wechat_article(media_id)
-    return res.get("publish_id", "")
-
-
 def dispatch_order(order: dict, force: bool = False) -> dict:
-    """发布一个订单里所有 approved 的渠道。返回每个渠道的结果（模拟/真实/需人工）。
+    """发布一个订单里所有 approved 的渠道。返回每个渠道的结果（模拟/推草稿/需人工）。
     规则：
     - approved + 渠道 mode='mock'   -> 标记 published（占位，不产生任何真实外部动作）
-    - approved + wechat mode='api'  -> 调真实 freepublish（主开关在调用方已校验）
+    - approved + wechat mode='api'  -> 推公众号草稿箱(_push_wechat_draft)，成功标记 draft_pushed
+                                       （未认证个人号到草稿箱为止，不做对外 freepublish）
     - approved + 渠道 mode='manual' -> needs_manual（该渠道没有可用自动发布能力）
     - 其他状态一律不动（不是 approved 就不发，这是硬规则）。
     force=True 用于后台"立即发布"按钮：忽略订单的 publish_at 时间窗口（用户显式意图），
@@ -477,12 +483,10 @@ def dispatch_order(order: dict, force: bool = False) -> dict:
             elif channel == "wechat" and mode == "api":
                 st["status"] = CH_PUBLISHING
                 save_order(order)
-                publish_id = _publish_wechat(order, st)
-                st["status"] = CH_PUBLISHED
-                st["published_at"] = _now_str()
-                st["platform_ref"] = publish_id
-                _ch_log(order, channel, f"公众号已发布：publish_id={publish_id}")
-                results[channel] = {"status": "published", "mode": "api", "publish_id": publish_id}
+                # 未认证个人号：到点推公众号草稿箱（AI 排版+封面+草稿 API），_push_wechat_draft
+                # 内部成功即置 draft_pushed + 存 draft_media_id；失败抛异常由下面 except 兜住。
+                media_id = _push_wechat_draft(order, st)
+                results[channel] = {"status": CH_DRAFT_PUSHED, "mode": "api", "draft_media_id": media_id}
             else:
                 st["status"] = CH_NEEDS_MANUAL
                 _ch_log(order, channel,
@@ -522,44 +526,11 @@ def run_dispatch_due(now: datetime | None = None) -> dict:
     return {"orders": dispatched, "skipped": skipped}
 
 
-# ---- 调度 tick（后台线程每分钟调一次） ----
-
-def event_action_map() -> dict[str, dict]:
-    cfg = load_autopublish_config()
-    return {ev.get("id"): ev for ev in cfg.get("events", []) if ev.get("action")}
-
-
-def scheduler_tick(now: datetime | None = None) -> list[str]:
-    """每分钟由 ui_app 的后台线程调用。只处理 dispatch 事件（collect/draft 已删除，物料在
-    创建发布单时自动生成）。dispatch 受主开关约束。"""
-    now = now or datetime.now()
-    today = now.strftime("%Y-%m-%d")
-    cfg = load_autopublish_config()
-    ran: list[str] = []
-    for event in cfg.get("events", []):
-        if not event.get("enabled"):
-            continue
-        try:
-            hh, mm = str(event.get("time", "")).split(":")
-            if now.strftime("%H:%M") != f"{int(hh):02d}:{int(mm):02d}":
-                continue
-        except (ValueError, AttributeError):
-            logger.warning(f"调度事件 {event.get('id')} 的 time 格式不对：{event.get('time')!r}，跳过")
-            continue
-        action = event.get("action")
-        if action != "dispatch":
-            # 兼容旧配置中可能存在的 collect/draft 事件，直接跳过
-            continue
-        if not master_enabled():
-            logger.info(f"调度 {today} {event.get('time')}：dispatch 被主开关拦截")
-            continue
-        try:
-            run_dispatch_due(now=now)
-            ran.append(action)
-            logger.info(f"调度事件执行完成：{action}")
-        except Exception:
-            logger.exception(f"调度事件执行失败：{action}（已捕获，不影响下一分钟）")
-    return ran
+# ---- 定时调度 ----
+# 到点触发（dispatch 事件 cron / 发布单 publish_at 一次性）已全部交给 scheduler.py 的
+# APScheduler 统一接管；本模块只提供被调用的业务入口 run_dispatch_due / dispatch_order，
+# 不再自己做“每分钟比对 HH:MM”的轮询 tick（旧的 scheduler_tick / event_action_map 已移除，
+# 避免与 scheduler.py 重复一套时间判断、改一处漏一处）。
 
 
 def run_action_once(action: str) -> dict:

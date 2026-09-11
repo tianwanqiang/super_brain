@@ -181,16 +181,18 @@ def publish_wechat_draft(title: str, content_html: str, cover_url: str | None = 
     return {"draft_media_id": draft_media_id, "thumb_media_id": thumb_media_id}
 
 
-# ---------- 微信：真正对外发布（autopublish 流水线的最后一步） ----------
+# ---------- 微信：真正对外发布（freepublish，需认证号；当前未启用，保留备用） ----------
 
 def publish_wechat_article(draft_media_id: str) -> dict:
     """把草稿箱里的一篇草稿真正发布出去（freepublish/submit，发布后对外可见、可被搜索）。
 
-    这是整个项目第一次触碰"真实对外发布"的接口，调用方必须满足的前提（autopublish.py 的
-    三重闸门在调度层保证，这里只做接口本身）：
-    - 公众号必须已开通"发布"能力：目前只有认证服务号/已认证的订阅号可用，未认证账号调这个
-      接口会报错（45064 之类的错误码）——报错原样抛 PublishError，不吞。
-    - 有每日发布次数限制（订阅号/服务号各不同），超限报错原样透传。
+    ⚠️ 当前 autopublish 流水线**不调用**这个函数：本项目公众号是未认证个人号，自动发布只到
+    “推草稿箱”为止（见 autopublish._push_wechat_draft / publishers.publish_wechat_draft）。
+    这里保留是给“以后换成认证号、要真正对外发布”时用的，调用方需自行满足：
+    - 公众号必须已开通“发布”能力：只有认证服务号 / 已认证订阅号可用，未认证账号调这个接口
+      会报错（45064 之类）——报错原样抛 PublishError，不吞。
+    - 发布（freepublish）不占用“群发”次数：群发才有订阅号每天 1 次 / 服务号每月 4 次的限制，
+      发布接口本身没有每日次数上限；因账号权限/内容问题报错则原样透传。
     - 一旦成功，内容立即对外可见且不可撤回（只能删除已发布文章），调用前先想清楚。
 
     返回 {"publish_id": "..."}（后续可以用 publish_id 查发布状态/删除）。

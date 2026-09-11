@@ -23,8 +23,6 @@ import queue
 import re
 import secrets
 import threading
-import time
-from datetime import datetime
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
@@ -44,10 +42,11 @@ import publishers
 import rag
 import review
 import roundtable
+import scheduler
 import tasks
 import video_prompt
 import workflow as workflow_engine
-from log_setup import LOG_FILE, configure_logging
+from log_setup import LOG_FILE, Clock, configure_logging
 from paths import AGENTS_DIR, SUPER_BRAIN
 
 configure_logging()
@@ -282,7 +281,7 @@ def persist_draft_log(minutes_path: str, result: dict) -> None:
     entry = {
         "minutes_path": minutes_path,
         "result": result,
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "timestamp": Clock.now().strftime("%Y-%m-%d %H:%M"),
     }
     slug = re.sub(r"[^\w一-鿿-]", "-", Path(minutes_path).stem)[:40].strip("-") or "untitled"
     out_path = DRAFT_LOG_DIR / f"{slug}.json"
@@ -365,7 +364,7 @@ def render_admin(**extra):
         toutiao_drafts_dir_effective=str(publishers.get_toutiao_drafts_dir()),
         review_agents=review_agents,
         review_state=review_state,
-        last_daily_batch_date=_last_daily_batch_date,
+        last_daily_batch_date=scheduler.last_daily_batch_date(),
         rag_rebuild_results=session.pop("rag_rebuild_results", None),
         roundtable_error=session.pop("roundtable_error", None),
         config_success=session.pop("config_success", None),
@@ -419,7 +418,7 @@ def roundtable_run():
         "conversation_id": conversation_id,
         "question": question,
         "agents": agent_names,
-        "started_at": datetime.now().strftime("%H:%M:%S"),
+        "started_at": Clock.now().strftime("%H:%M:%S"),
     })
     logger.info(f"UI：触发圆桌讨论（后台线程）-> conversation_id={conversation_id}, question={question!r}, agents={agent_names}")
 
@@ -472,7 +471,7 @@ def roundtable_run_stream():
         "conversation_id": conversation_id,
         "question": question,
         "agents": agent_names,
-        "started_at": datetime.now().strftime("%H:%M:%S"),
+        "started_at": Clock.now().strftime("%H:%M:%S"),
     })
     logger.info(f"UI：触发圆桌讨论（流式）-> conversation_id={conversation_id}, question={question!r}, agents={agent_names}")
 
@@ -565,7 +564,7 @@ def minutes_draft():
 
     _set_current_draft({
         "minutes_path": minutes_path,
-        "started_at": datetime.now().strftime("%H:%M:%S"),
+        "started_at": Clock.now().strftime("%H:%M:%S"),
     })
     logger.info(
         f"UI：触发助手 agent 生成草稿（后台线程）-> minutes_path={minutes_path!r}, "
@@ -766,7 +765,7 @@ def private_chat_start():
         session["roundtable_error"] = "已经有一次私聊生成正在进行中，请等它结束再提交。"
         return redirect(url_for("index", conversation=source_conversation_id))
 
-    _set_current_private_chat_run({"conversation_id": conversation_id, "started_at": datetime.now().strftime("%H:%M:%S")})
+    _set_current_private_chat_run({"conversation_id": conversation_id, "started_at": Clock.now().strftime("%H:%M:%S")})
 
     def _worker():
         try:
@@ -806,7 +805,7 @@ def private_chat_send():
         session["private_chat_error"] = "已经有一次生成正在进行中，请等它结束再提交。"
         return redirect(url_for("private_chat_page", conversation_id=conversation_id))
 
-    _set_current_private_chat_run({"conversation_id": conversation_id, "started_at": datetime.now().strftime("%H:%M:%S")})
+    _set_current_private_chat_run({"conversation_id": conversation_id, "started_at": Clock.now().strftime("%H:%M:%S")})
 
     def _worker():
         try:
@@ -898,37 +897,10 @@ def _pop_private_chat_error() -> str | None:
         return message
 
 
-# 每日 18 点批量汇总——后台线程每分钟检查一次，一旦当天首次过了 18 点就跑一次
-# digest.run_daily_batch()，一天只跑一次（_last_daily_batch_date 记住今天跑过没）。
-# 老实说清楚：这是真实会花 DeepSeek 额度的调用（如果当天有 opc 笔记的话）——服务器一旦
-# 启动，这个线程就是活的，18 点之后自动触发，不需要也不会再问一遍。
-_last_daily_batch_date: str | None = None
-
-
-def _run_daily_batch_once(trigger_label: str) -> None:
-    global _last_daily_batch_date
-    try:
-        api_key = llm_client.load_deepseek_api_key()
-    except llm_client.DeepSeekConfigError as exc:
-        logger.warning(f"每日批处理（{trigger_label}）：{exc}，跳过")
-        return
-    try:
-        out_path = digest.run_daily_batch(api_key=api_key)
-        logger.info(f"每日批处理（{trigger_label}）完成：{out_path}")
-    except Exception:
-        logger.exception(f"每日批处理（{trigger_label}）失败")
-    finally:
-        _last_daily_batch_date = datetime.now().strftime("%Y-%m-%d")
-
-
-def _daily_batch_scheduler_loop() -> None:
-    while True:
-        time.sleep(60)
-        now = datetime.now()
-        today_str = now.strftime("%Y-%m-%d")
-        if now.hour >= 18 and _last_daily_batch_date != today_str:
-            logger.info("每日批处理：过了 18 点且今天还没跑过，自动触发")
-            _run_daily_batch_once("18点自动触发")
+# 每日 18 点批量汇总的定时逻辑已上移到 scheduler.py（统一的 APScheduler 调度中枢）。
+# 这里只保留一个“手动立即跑一次”的按钮入口（/admin/daily-batch/run），直接调
+# scheduler.run_daily_batch_once（cron 触发 / 启动补跑 / 手动按钮共用同一份实现）。
+# 老实说清楚：这是真实会花 DeepSeek 额度的调用（如果当天有 opc 笔记的话）。
 
 
 def render_video_prompt(conversation_id: str | None = None, **extra):
@@ -981,7 +953,7 @@ def video_prompt_send():
 
     _set_current_video_prompt_run({
         "conversation_id": conversation_id,
-        "started_at": datetime.now().strftime("%H:%M:%S"),
+        "started_at": Clock.now().strftime("%H:%M:%S"),
     })
     logger.info(f"UI：触发 video-prompt 生成（后台线程）-> conversation_id={conversation_id}")
 
@@ -1032,7 +1004,7 @@ def daily_batch_run_now():
     """手动立即跑一次每日批处理——测试用，不用等到真的 18 点。会真的花 DeepSeek 额度
     （如果今天的 opc 笔记存在的话），点这个按钮就是在做那次真实调用。
     """
-    _run_daily_batch_once("手动触发")
+    scheduler.run_daily_batch_once("手动触发")
     return redirect(url_for("admin"))
 
 
@@ -1305,23 +1277,11 @@ def draft_preview():
 
 
 # ==================== 自动化媒体发布流水线（/admin/autopublish） ====================
-# 页面 + 路由 + 调度线程都在这一个区块。调度逻辑本身在 autopublish.py，这里只负责
-# "Flask 怎么把后台页面和按钮接到 autopublish.py 的函数上"，不重复实现业务判断。
-# 防重入锁：调度 tick 和"立即执行"按钮共用同一把锁，避免两个动作同时写发布单。
-_autopublish_lock = threading.Lock()
-
-
-def _autopublish_scheduler_loop() -> None:
-    while True:
-        time.sleep(60)
-        try:
-            if _autopublish_lock.acquire(blocking=False):
-                try:
-                    autopublish.scheduler_tick()
-                finally:
-                    _autopublish_lock.release()
-        except Exception:
-            logger.exception("自动化发布调度 tick 异常（已捕获，不影响下一分钟）")
+# 页面 + 路由都在这一个区块。业务逻辑在 autopublish.py，定时触发在 scheduler.py（统一的
+# APScheduler 调度中枢，已取代原来这里的每分钟轮询线程），这里只负责“Flask 怎么把后台页面
+# 和按钮接到 autopublish.py 的函数上”，不重复实现业务判断。
+# 防重入锁用 scheduler.DISPATCH_LOCK——定时 job 和“立即执行/立即发布”按钮共用同一把锁，
+# 避免两个动作同时写发布单（锁定义在 scheduler.py，打破 ui_app↔scheduler 循环导入）。
 
 
 _SOURCE_LABELS = {
@@ -1422,6 +1382,7 @@ def autopublish_save_config():
     full[autopublish.CONFIG_KEY] = cfg
     _write_config_with_backup(full)  # 备份 + 写回，不动 config.json 其它字段
     logger.info(f"UI：AUTOPUBLISH 配置已保存（master={cfg['master_enabled']}）")
+    scheduler.reschedule_autopublish()  # 事件时间/开关、渠道 mode 可能变了，重建定时 job
     session["autopublish_msg"] = "调度与渠道配置已保存。"
     return redirect(url_for("autopublish_page"))
 
@@ -1433,7 +1394,7 @@ def autopublish_run_now():
     if action not in autopublish.ACTION_LABELS:
         session["autopublish_error"] = f"未知动作：{action!r}"
         return redirect(url_for("autopublish_page"))
-    if not _autopublish_lock.acquire(blocking=False):
+    if not scheduler.DISPATCH_LOCK.acquire(blocking=False):
         session["autopublish_error"] = "已有调度/按钮动作正在执行，请稍等再试。"
         return redirect(url_for("autopublish_page"))
     try:
@@ -1445,7 +1406,8 @@ def autopublish_run_now():
         summary = json.dumps(result, ensure_ascii=False)
         session["autopublish_msg"] = f"「{autopublish.ACTION_LABELS[action]}」执行完成：{summary[:500]}"
     finally:
-        _autopublish_lock.release()
+        scheduler.DISPATCH_LOCK.release()
+    scheduler.reschedule_autopublish()  # dispatch 可能改了发布单状态，重建 job（去掉已终结的）
     return redirect(url_for("autopublish_page"))
 
 
@@ -1470,6 +1432,7 @@ def autopublish_order_new():
     order = autopublish.new_order(title, {"kind": "text", "text": text[:20000]}, channels, publish_at=publish_at)
     autopublish.save_order(order)
     logger.info(f"UI：新建发布单 {order['id']}")
+    scheduler.reschedule_autopublish()  # 新单入库（此刻是 drafted，放行后才会排到点触发）
     session["autopublish_msg"] = f"发布单已创建：{order['id']}（物料已自动生成）。下一步：审阅后批准发布。"
     return redirect(url_for("autopublish_page"))
 
@@ -1493,6 +1456,7 @@ def autopublish_order_push_wechat(order_id):
     except Exception as exc:
         logger.warning(f"UI：发布单 {order_id} 推送公众号草稿失败：{exc}")
         session["autopublish_error"] = f"推送公众号草稿失败：{exc}"
+    scheduler.reschedule_autopublish()  # 推草稿后 wechat 渠道变 draft_pushed，重建 job（去掉已终结的）
     return redirect(url_for("autopublish_page"))
 
 
@@ -1506,6 +1470,7 @@ def autopublish_order_approve(order_id):
         session["autopublish_msg"] = f"已放行渠道 {channel}（gatekeeper 通过）。到点后 publisher 才会执行。"
     except ValueError as exc:
         session["autopublish_error"] = str(exc)
+    scheduler.reschedule_autopublish()  # 放行后该单可能变为“有 approved 渠道+publish_at”，排到点触发
     return redirect(url_for("autopublish_page"))
 
 
@@ -1516,6 +1481,7 @@ def autopublish_order_reject(order_id):
     if _load_order_or_error(order_id) is None:
         return redirect(url_for("autopublish_page"))
     autopublish.reject_channel(order_id, channel, reason)
+    scheduler.reschedule_autopublish()  # 打回后 approved 渠道可能没了，重建 job
     session["autopublish_msg"] = f"渠道 {channel} 已打回。"
     return redirect(url_for("autopublish_page"))
 
@@ -1530,7 +1496,7 @@ def autopublish_order_publish(order_id):
     if not autopublish.master_enabled():
         session["autopublish_error"] = "全局主开关未打开，不会执行任何真实/模拟发布。先到本页顶部打开再试。"
         return redirect(url_for("autopublish_page"))
-    if not _autopublish_lock.acquire(blocking=False):
+    if not scheduler.DISPATCH_LOCK.acquire(blocking=False):
         session["autopublish_error"] = "已有动作正在执行，请稍等再试。"
         return redirect(url_for("autopublish_page"))
     try:
@@ -1540,7 +1506,8 @@ def autopublish_order_publish(order_id):
         logger.exception(f"UI：发布单 {order_id} 发布执行失败")
         session["autopublish_error"] = f"发布执行失败：{exc}"
     finally:
-        _autopublish_lock.release()
+        scheduler.DISPATCH_LOCK.release()
+    scheduler.reschedule_autopublish()  # 发布后状态变了（published/draft_pushed/failed），重建 job
     return redirect(url_for("autopublish_page"))
 
 
@@ -1550,6 +1517,7 @@ def autopublish_order_cancel(order_id):
     if _load_order_or_error(order_id) is None:
         return redirect(url_for("autopublish_page"))
     autopublish.cancel_order(order_id, reason)
+    scheduler.reschedule_autopublish()  # 取消后不再触发，移除该单的定时 job
     session["autopublish_msg"] = "发布单已取消。"
     return redirect(url_for("autopublish_page"))
 
@@ -1557,6 +1525,7 @@ def autopublish_order_cancel(order_id):
 @app.route("/admin/autopublish/order/<order_id>/delete", methods=["POST"])
 def autopublish_order_delete(order_id):
     autopublish.delete_order(order_id)
+    scheduler.reschedule_autopublish()  # 删除后移除该单的定时 job
     session["autopublish_msg"] = "发布单已删除。"
     return redirect(url_for("autopublish_page"))
 
@@ -1565,7 +1534,7 @@ def autopublish_order_delete(order_id):
 # 两步流程：先"生成"——真实调用 DeepSeek（content-strategist 策划 → writer 成稿，约 1 分钟），
 # 结果落到 _studio_draft 供页面预览/手动修改；再"推送"——把预览里的标题/正文/渠道交给
 # autopublish.new_order 建发布单（物料自动生成），完全复用既有发布链路。
-# 生成走后台线程 + 独立 _studio_lock（不复用 _autopublish_lock，否则一次生成会卡住发布调度和
+# 生成走后台线程 + 独立 _studio_lock（不复用 scheduler.DISPATCH_LOCK，否则一次生成会卡住发布调度和
 # 其它按钮）；前端轮询 studio/status 拿进度，规避 LLM 调用阻塞请求（gunicorn WORKER TIMEOUT 前车之鉴）。
 
 _studio_lock = threading.Lock()
@@ -1662,7 +1631,7 @@ def _studio_run_generate(source_text: str, user_instruction: str, title_hint: st
             "title": title,
             "draft": draft,
             "source_len": len(source_text),
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": Clock.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
     logger.info(f"内容创作台：博文已生成，标题={title[:40]}，正文 {len(draft)} 字")
 
@@ -1865,20 +1834,8 @@ def config_test_mail():
 
 # ==================== 内容工作流（P4：定时 → agent1 → 预览 → 审批 → 依次执行） ====================
 
-_workflow_lock = threading.Lock()
-
-
-def _workflow_scheduler_loop() -> None:
-    while True:
-        time.sleep(60)
-        try:
-            if _workflow_lock.acquire(blocking=False):
-                try:
-                    workflow_engine.scheduler_tick()
-                finally:
-                    _workflow_lock.release()
-        except Exception:
-            logger.exception("内容工作流调度 tick 异常（已捕获，不影响下一分钟）")
+# 工作流的定时触发在 scheduler.py（统一 APScheduler，已取代原来这里的每分钟轮询线程）。
+# 防重入锁用 scheduler.WORKFLOW_LOCK——定时 job 和后台“手动推进/审批”按钮共用同一把锁。
 
 
 def _workflow_step_pill(status: str) -> str:
@@ -1968,6 +1925,7 @@ def workflows_save():
         for i, step in enumerate(steps):
             step["requires_approval"] = bool(request.form.get(f"wf_{wf_id}_s{i}_approval"))
     workflow_engine.save_workflows(workflows)
+    scheduler.reschedule_workflows()  # 调度时间/开关可能变了，重建工作流 cron job
     _workflow_msg_set("工作流定义已保存（含每步审批开关）。")
     return redirect(url_for("workflows_page"))
 
@@ -1992,7 +1950,7 @@ def _start_workflow_action(label: str, fn, ok_msg: str | None):
     """把耗时操作丢到后台线程，请求立刻返回；前端轮询 /admin/workflows/status 拿进度，
     避免按钮点了没反应、用户重复点击。锁保证同一时间只有一个工作流动作在跑。"""
     global _workflow_job_active, _workflow_job_label, _workflow_job_msg, _workflow_job_error
-    if _workflow_lock.locked():
+    if scheduler.WORKFLOW_LOCK.locked():
         with _state_lock:
             _workflow_job_error = "已有工作流操作在执行，请稍候。"
         return False
@@ -2006,7 +1964,7 @@ def _start_workflow_action(label: str, fn, ok_msg: str | None):
     def _worker():
         global _workflow_job_active, _workflow_job_msg, _workflow_job_error
         try:
-            with _workflow_lock:
+            with scheduler.WORKFLOW_LOCK:
                 fn()
             with _state_lock:
                 _workflow_job_msg = ok_msg
@@ -2176,17 +2134,11 @@ def workflows_run_edit(run_id):
     return redirect(url_for("workflows_page"))
 
 
-# pytest 会自动设置 PYTEST_CURRENT_TEST 这个环境变量——测试文件 import ui_app 时必须
-# 跳过这一步，否则会启动一个真实的后台线程，一旦测试恰好在过了本机 18 点之后运行，
-# 会触发真实的、要花钱的 DeepSeek 批量调用，不是测试应该产生的副作用。正常运行（gunicorn/
-# 本机 python ui_app.py）不会有这个环境变量，行为不受影响。
-if not os.environ.get("PYTEST_CURRENT_TEST"):
-    threading.Thread(target=_daily_batch_scheduler_loop, daemon=True).start()
-    logger.info("每日 18 点批量汇总的调度线程已启动（每分钟检查一次）")
-    threading.Thread(target=_autopublish_scheduler_loop, daemon=True).start()
-    logger.info("自动化媒体发布调度线程已启动（每分钟检查一次，事件默认全部关闭）")
-    threading.Thread(target=_workflow_scheduler_loop, daemon=True).start()
-    logger.info("内容工作流调度线程已启动（每分钟检查一次，工作流默认全部关闭）")
+# 启动统一定时调度器（scheduler.py 的 APScheduler）：每日批处理 / 自动发布 dispatch 事件 /
+# 发布单 publish_at / 内容工作流全部由它接管，不再有各自的每分钟轮询线程。
+# scheduler.start() 内部已做 PYTEST_CURRENT_TEST 守卫——测试 import ui_app 时不会真起调度器、
+# 不会到点触发要花钱的 DeepSeek 调用；正常运行（gunicorn -w 1 / 本机 python ui_app.py）才启动。
+scheduler.start()
 
 if __name__ == "__main__":
     # 本机开发默认只监听 127.0.0.1（不对局域网/公网开放）；容器部署时 Dockerfile 会把

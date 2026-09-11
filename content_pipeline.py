@@ -29,7 +29,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime
+from log_setup import Clock
 from pathlib import Path
 
 import autopublish
@@ -71,11 +71,11 @@ def _structured_llm_or_default(llm_call):
 # ---------- 公共工具 ----------
 
 def _now() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return Clock.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _run_id() -> str:
-    return f"cp_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
+    return f"cp_{Clock.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:6]}"
 
 
 def _resolve_api_key(api_key: str | None) -> str:
@@ -106,7 +106,7 @@ def persist_research(package: dict) -> Path:
     """把单次信息搜集落盘（executor/inbox 触发时用，独立于整条流水线的 record）。"""
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\w一-鿿-]", "-", str(package.get("topic") or "research"))[:40].strip("-") or "research"
-    path = RUNS_DIR / f"research_{datetime.now():%Y%m%d_%H%M%S}_{slug}.json"
+    path = RUNS_DIR / f"research_{Clock.now():%Y%m%d_%H%M%S}_{slug}.json"
     path.write_text(json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"信息包已落盘：{path}")
     return path
@@ -116,7 +116,7 @@ def persist_critic(note: dict, draft_excerpt: str = "") -> Path:
     """把单次点评意见单落盘（executor/inbox 触发时用）。附一份被评稿件的摘录。"""
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\w一-鿿-]", "-", str(note.get("title") or "critic"))[:40].strip("-") or "critic"
-    path = RUNS_DIR / f"critic_{datetime.now():%Y%m%d_%H%M%S}_{slug}.json"
+    path = RUNS_DIR / f"critic_{Clock.now():%Y%m%d_%H%M%S}_{slug}.json"
     path.write_text(json.dumps({"note": note, "draft_excerpt": draft_excerpt[:2000]},
                                ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"意见单已落盘：{path}")

@@ -145,7 +145,8 @@
 
 <h2>每日 18 点批量汇总</h2>
 <p style="font-size:12.5px; color:#888;">
-  后台线程每分钟检查一次，过了 18 点且今天还没跑过就自动触发一次——如果当天有 opc 笔记，
+  统一调度器（scheduler.py 的 APScheduler，固定东八区）每天 18:00 触发一次；服务若在 18 点
+  之后才启动、当天又还没跑过，会立即补跑一次——如果当天有 opc 笔记，
   会真的调 ops-assistant 生成头条/公众号草稿，再把今天的任务/圆桌状态汇总成一份文档，
   存到 <code>daily_digests/&lt;日期&gt;.md</code>。opc 笔记不存在时跳过，不生成空汇总。
   {% if last_daily_batch_date %}今天已经跑过一次（{{ last_daily_batch_date }}）。

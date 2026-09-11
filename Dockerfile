@@ -23,10 +23,12 @@ ENV SUPER_BRAIN_DIR=/app \
 
 EXPOSE 5151
 
-# -w 1：只用一个 worker。每日 18 点批量汇总的调度线程在模块导入时就启动（不是在
-# `if __name__ == "__main__"` 里），多个 worker 会导致每个进程各自起一个调度线程，
-# 18 点那一刻会被重复触发多次（重复花 DeepSeek 额度）。这是单用户内部工具，1 个 worker
-# 完全够用，不需要为并发能力牺牲这个正确性。
+# -w 1：只用一个 worker，且不能加 --preload。所有定时任务（每日 18 点批处理 / 自动发布
+# dispatch 事件 / 发布单 publish_at / 内容工作流）现在统一由 scheduler.py 的 APScheduler
+# 在模块导入时启动（不是在 `if __name__ == "__main__"` 里）。多个 worker 会让每个进程各起
+# 一个调度器，到点重复触发（重复花 DeepSeek 额度 / 重复推草稿）；--preload 会让调度器在
+# master 进程 start() 后被 fork，子进程里调度线程不存活、job 永不触发（静默失效）。这是单
+# 用户内部工具，1 个 worker 完全够用，不需要为并发能力牺牲这个正确性。
 # --timeout 240：机制2定期复盘那个路由是同步阻塞调用 DeepSeek 的（不是后台线程、没有
 # SSE 保活机制），gunicorn 默认 30 秒超时可能会把这类请求杀掉。2026-09-04 真实发生过
 # --timeout 120 把圆桌讨论的 SSE 连接所在的 worker 杀掉、讨论内容当场从 UI 消失的事故——
