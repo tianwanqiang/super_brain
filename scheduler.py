@@ -15,6 +15,9 @@ ui_app.py 里——每日批处理 / 自动发布 dispatch / 内容工作流。�
 
 设计要点：
 - 时区固定东八区（Clock.TZ），不依赖容器 TZ（python:3.13-slim 无 tzdata，设 TZ 会静默失效）。
+  ⚠️ 每个 CronTrigger/DateTrigger 都必须显式传 timezone=Clock.TZ：BackgroundScheduler 的 timezone
+  只对“用字符串/dict 现场构造的 trigger”生效，对我们 add_job 传入的 trigger 实例无效——不显式传
+  trigger 就 fallback 到 get_localzone()，在 UTC 机器（CI / 生产 Docker）上 cron 会按 UTC 触发。
 - 单线程 executor（max_workers=1）：所有 job 串行执行，天然避免两个定时任务同时写发布单/
   跑工作流。但 UI 按钮（立即执行 / 立即发布 / 工作流操作）跑在 Flask 请求线程里，与 job
   并发，故仍需 DISPATCH_LOCK / WORKFLOW_LOCK 两把锁——锁定义在本模块（与具体 domain 无关），
@@ -203,7 +206,7 @@ def _schedule_order(order: dict) -> None:
         logger.info(f"发布单 {order_id} 的计划时间 {plan_at} 今天已过，不补推（等下次手动/次日重排）")
         return
     _scheduler.add_job(
-        _job_order_dispatch, DateTrigger(run_date=run_date),
+        _job_order_dispatch, DateTrigger(run_date=run_date, timezone=Clock.TZ),
         id=job_id, args=[order_id], replace_existing=True,
         # 过点 5 分钟以上就不推了——跟 dispatch_order 里 _due_now 的 ±5 分钟窗口保持一致，
         # 也兑现"发布单过点不自动补推"的策略（服务半夜恢复不会突然推一堆草稿）。
@@ -231,7 +234,7 @@ def reschedule_autopublish() -> None:
             logger.warning(f"调度事件 {event.get('id')} 时间格式不对：{event.get('time')!r}，跳过")
             continue
         _scheduler.add_job(
-            _job_dispatch_event, CronTrigger(hour=hh, minute=mm),
+            _job_dispatch_event, CronTrigger(hour=hh, minute=mm, timezone=Clock.TZ),
             id=f"{_PREFIX_DISPATCH}{event.get('id')}", args=[event.get("id")],
             replace_existing=True,
         )
@@ -268,7 +271,7 @@ def reschedule_workflows() -> None:
             logger.warning(f"工作流 {wf_id} 时间格式不对：{schedule.get('time')!r}，跳过")
             continue
         _scheduler.add_job(
-            _job_workflow, CronTrigger(hour=hh, minute=mm),
+            _job_workflow, CronTrigger(hour=hh, minute=mm, timezone=Clock.TZ),
             id=f"{_PREFIX_WORKFLOW}{wf_id}", args=[wf_id], replace_existing=True,
         )
     logger.info("内容工作流调度已重建")
@@ -283,7 +286,8 @@ def reschedule_all() -> None:
         return
     _remove_job(_JOB_DAILY)
     _scheduler.add_job(
-        _job_daily_batch, CronTrigger(hour=_DAILY_BATCH_HOUR, minute=_DAILY_BATCH_MINUTE),
+        _job_daily_batch, CronTrigger(hour=_DAILY_BATCH_HOUR, minute=_DAILY_BATCH_MINUTE,
+                                           timezone=Clock.TZ),
         id=_JOB_DAILY, replace_existing=True,
     )
     reschedule_autopublish()
@@ -318,7 +322,7 @@ def start() -> None:
     now = Clock.now()
     if now.hour >= _DAILY_BATCH_HOUR and _last_daily_batch_date != now.strftime("%Y-%m-%d"):
         _scheduler.add_job(
-            _job_daily_batch, DateTrigger(run_date=now.replace(tzinfo=Clock.TZ)),
+            _job_daily_batch, DateTrigger(run_date=now.replace(tzinfo=Clock.TZ), timezone=Clock.TZ),
             id=_JOB_DAILY + "_catchup", replace_existing=True,
         )
         logger.info("每日批处理：启动时已过 18 点且今天没跑过，已排入补跑")
