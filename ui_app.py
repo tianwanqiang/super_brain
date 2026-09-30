@@ -2065,6 +2065,22 @@ def workflows_step_redo(run_id, step_index):
     return redirect(url_for("workflows_page"))
 
 
+@app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/revise", methods=["POST"])
+def workflows_step_revise(run_id, step_index):
+    """critic 审批口"按必改点重写"：writer 按评分卡 must_fix 定向重写一稿 + 重评，
+    产物更新后仍停在审批口等人决定（重写不代替审批）。"""
+    def _do():
+        try:
+            api_key = llm_client.load_deepseek_api_key()
+        except llm_client.DeepSeekConfigError:
+            api_key = None   # revise 必须调 LLM：引擎内 _resolve_api_key 会再加载，缺 key 如实报错
+        workflow_engine.revise_step(run_id, step_index, api_key=api_key)
+
+    _start_workflow_action("按必改点重写并重新评分", _do,
+                           "已按必改点重写并重新评分，请查看新稿与新评分后再决定通过/打回。")
+    return redirect(url_for("workflows_page"))
+
+
 @app.route("/admin/workflows/run/<run_id>/step/<int:step_index>/skip", methods=["POST"])
 def workflows_step_skip(run_id, step_index):
     """跳过该步继续（用于某步因额度/网络反复失败等）——跳过内容步骤=人工后续补，跳过 publish=不产生发布单。"""

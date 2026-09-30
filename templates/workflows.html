@@ -219,6 +219,10 @@
           <details class="prod"><summary>展开定稿</summary><pre>{{ art.preview }}</pre></details>
         {% elif art.kind == 'critic' %}
           <span class="muted">verdict={{ art.verdict }} · scores={{ art.scores }}</span>
+          {% if art.revisions %}
+          <div class="muted" style="margin-top:3px;">🔁 已按必改点重写 {{ art.revisions|length }} 轮（verdict：{{ art.revisions|map(attribute='verdict')|join(' → ') }} → {{ art.verdict }}）</div>
+          <details class="prod"><summary>展开最新修订稿</summary><pre>{{ art.payload[:4000] }}</pre></details>
+          {% endif %}
           {% if art.must_fix %}<details class="prod"><summary>必改点（{{ art.must_fix|length }}）</summary><ul>{% for f in art.must_fix %}<li>{{ f }}</li>{% endfor %}</ul></details>{% endif %}
         {% elif art.kind == 'publish_order' %}
           <a href="{{ url_for('autopublish_page') }}">发布单 {{ art.handoff_order_id }} →</a>
@@ -230,6 +234,12 @@
         {% if (step.artifact or {}).kind != 'topics' %}
         <form method="post" action="{{ url_for('workflows_step_approve', run_id=run.run_id, step_index=step.index) }}" style="margin:2px 0;">
           <input type="hidden" name="note" value=""><button type="submit" class="primary">✅ 通过，继续</button>
+        </form>
+        {% endif %}
+        {% if (step.artifact or {}).kind == 'critic' and (step.artifact or {}).must_fix %}
+        <form method="post" action="{{ url_for('workflows_step_revise', run_id=run.run_id, step_index=step.index) }}" style="margin:2px 0;"
+              onsubmit="return confirm('按必改点重写会真实调用 DeepSeek 两次（定向重写 + 重新评分），消耗额度。继续？');">
+          <button type="submit" class="warn small">🔁 按必改点重写</button>
         </form>
         {% endif %}
         <form method="post" action="{{ url_for('workflows_step_redo', run_id=run.run_id, step_index=step.index) }}" style="margin:2px 0;">

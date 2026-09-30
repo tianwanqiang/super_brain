@@ -313,6 +313,7 @@ def _handle_critic(ctx: dict) -> dict:
         "must_fix": note.get("must_fix", []),
         "parse_error": note.get("parse_error", False),
         "file": str(file_path),
+        "title": title,   # 标题也要继续往下传：publish 交接发布单靠 prev.title，缺了会退化成"工作流产出 MM-DD"
         "payload": draft,  # 定稿继续往下传（发布用）
         "preview": json.dumps({"verdict": note["verdict"], "scores": note.get("scores", {})},
                               ensure_ascii=False),
@@ -533,6 +534,60 @@ def redo_step(run_id: str, step_index: int, api_key: str | None = None) -> dict:
     _append_history(run, f"等待审批中重跑步骤 {step['id']}（覆盖旧产物）")
     save_run(run)
     return advance(run_id, api_key=api_key)
+
+
+def revise_step(run_id: str, step_index: int, api_key: str | None = None) -> dict:
+    """critic 审批口的"按必改点重写"：把评分卡的 must_fix 喂回 writer 定向重写一版，
+    再对新稿重跑一次 critic 评分，更新该步骤产物——步骤仍停在审批口，由人看新稿新评分
+    决定通过/打回。重写指令与 content_pipeline.run_pipeline 的自动迭代措辞一致，区别是
+    这里由人工触发、每轮都过审批闸门，不会无人值守地烧额度。"""
+    run = load_run(run_id)
+    if run is None:
+        raise ValueError(f"运行实例不存在：{run_id}")
+    step = next((s for s in run["steps"] if s["index"] == step_index), None)
+    if step is None:
+        raise ValueError(f"步骤不存在：{step_index}")
+    if step["status"] != ST_AWAITING:
+        raise ValueError(f"步骤 {step['id']} 当前状态 {step['status']}，不能重写（仅等待审批时可重写）")
+    art = step.get("artifact") or {}
+    if art.get("kind") != "critic":
+        raise ValueError(f"步骤 {step['id']} 不是评分步骤，没有可依据的评分卡")
+    draft = (art.get("payload") or "").strip()
+    must_fix = art.get("must_fix") or []
+    if not draft:
+        raise ValueError("评分卡里没有定稿正文，无法重写")
+    if not must_fix:
+        raise ValueError("评分卡没有必改点，无需重写（可直接通过，或重跑该步换一稿）")
+
+    old_verdict = art.get("verdict")
+    fix_notes = "；".join(str(x) for x in must_fix)[:800]
+    revised = content_pipeline.run_writer_draft(
+        draft, api_key,
+        user_instruction=f"上一版评论家要求修改：{fix_notes}（只按这些点改，不要整体重写风格）")
+    revision_no = len(art.get("revisions") or []) + 1
+    note = content_pipeline.run_critic(f"workflow-{run_id}-r{revision_no}",
+                                       revised["title"], revised["draft"],
+                                       platform="toutiao", api_key=api_key)
+    file_path = content_pipeline.persist_critic(note, revised["draft"])
+
+    # 旧稿的评分归档进 revisions（round 从 0 起=原始稿），顶层字段更新为最新稿的
+    art.setdefault("revisions", []).append({
+        "round": revision_no - 1, "verdict": old_verdict,
+        "scores": art.get("scores", {}), "must_fix": must_fix, "at": _now(),
+    })
+    art.update({
+        "title": revised["title"], "payload": revised["draft"],
+        "verdict": note["verdict"], "scores": note.get("scores", {}),
+        "must_fix": note.get("must_fix", []), "parse_error": note.get("parse_error", False),
+        "file": str(file_path),
+        "preview": json.dumps({"verdict": note["verdict"], "scores": note.get("scores", {})},
+                              ensure_ascii=False),
+    })
+    step["artifact"] = art
+    _append_history(run, f"步骤 {step['id']} 按必改点重写（第 {revision_no} 轮）："
+                         f"verdict {old_verdict}→{note['verdict']}，新稿 {len(revised['draft'])} 字")
+    save_run(run)   # 步骤保持 awaiting_approval：重写不代替审批，仍由人决定通过/打回
+    return run
 
 
 def skip_step(run_id: str, step_index: int, reason: str = "") -> dict:

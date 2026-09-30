@@ -5,6 +5,7 @@ workflow.py（内容工作流引擎）的离线测试——全程假步骤处理
 - 审批闸门：选题审批带 chosen_topic（否则报错）、逐步骤通过才推进
 - requires_approval=False 自动继续；选题步骤无需审批时自动选第一个候选
 - 打回停止 / 失败重试 / 异常处理
+- critic 审批口"按必改点重写"：must_fix 喂回 writer 重写+重评，仍停审批口；title 透传到发布单
 - publish 步骤真实交接成 autopublish 发布单（隔离队列目录）
 - 调度：到点当天只启动一次，第一步（选题提案）停在审批口
 - 邮件通知：进入审批口且配置了 MAIL 时调用 send_mail（monkeypatch 掉真发送）
@@ -275,6 +276,106 @@ def test_redo_publish_guard_raises(env):
     assert _step(r, "publish")["status"] == wf.ST_AWAITING
     with pytest.raises(ValueError, match="不可重跑"):
         wf.redo_step(run["run_id"], _step(r, "publish")["index"])
+
+
+def test_critic_artifact_carries_title_into_publish_order(env, monkeypatch):
+    """A修复回归：critic 产物必须透传 write 的 title——否则 publish 交接的发布单
+    标题会退化成通用的"工作流产出 MM-DD"（_handle_publish 读 prev.title）。"""
+    monkeypatch.setattr(wf.content_pipeline, "run_critic",
+                        lambda *a, **k: {"verdict": "accept", "scores": {"hook": 5},
+                                         "must_fix": [], "parse_error": False})
+    monkeypatch.setattr(wf.content_pipeline, "persist_critic",
+                        lambda note, draft="": env / "critic.json")
+    monkeypatch.setitem(wf.step_id_handlers, "critic", wf._handle_critic)
+    monkeypatch.setitem(wf.step_id_handlers, "publish", wf._handle_publish)
+    _write_config(env, {})
+    run = wf.create_run(wf.DEFAULT_WORKFLOW_ID, topic="选题T")
+    wf.advance(run["run_id"])
+    for sid in ("research", "write"):                        # 推到 critic 审批口
+        r = wf.load_run(run["run_id"])
+        wf.approve_step(run["run_id"], _step(r, sid)["index"])
+    r = wf.load_run(run["run_id"])
+    assert _step(r, "critic")["artifact"]["title"] == "标题T"   # 假 write 产物的 title 被透传
+    wf.approve_step(run["run_id"], _step(r, "critic")["index"])  # critic 过 → publish 自动交接
+    r = wf.load_run(run["run_id"])
+    order = autopublish.load_order(_step(r, "publish")["artifact"]["handoff_order_id"])
+    assert order["title"] == "标题T"                        # 发布单标题 = 真实标题
+
+
+def test_revise_step_rewrites_with_must_fix_and_rescores(env, monkeypatch):
+    """B功能：critic 审批口"按必改点重写"——must_fix 喂回 writer 定向重写 → 新稿重评 →
+    产物更新（旧评分归档 revisions）、步骤仍停审批口等人决定。"""
+    calls = {}
+
+    def fake_writer(source, api_key=None, user_instruction=None, **kw):
+        calls["instruction"] = user_instruction
+        return {"title": "修订标题", "draft": "修订正文"}
+
+    def fake_critic(draft_id, title, draft, **kw):
+        calls["rescored"] = draft
+        return {"verdict": "accept", "scores": {"hook": 5}, "must_fix": [], "parse_error": False}
+
+    monkeypatch.setattr(wf.content_pipeline, "run_writer_draft", fake_writer)
+    monkeypatch.setattr(wf.content_pipeline, "run_critic", fake_critic)
+    monkeypatch.setattr(wf.content_pipeline, "persist_critic",
+                        lambda note, draft="": env / "critic.json")
+    _write_config(env, {})
+    run = wf.create_run(wf.DEFAULT_WORKFLOW_ID, topic="选题V")
+    wf.advance(run["run_id"])
+    for sid in ("research", "write"):
+        r = wf.load_run(run["run_id"])
+        wf.approve_step(run["run_id"], _step(r, sid)["index"])
+    r = wf.load_run(run["run_id"])
+    critic = _step(r, "critic")
+    assert critic["status"] == wf.ST_AWAITING
+    assert critic["artifact"]["must_fix"] == ["补个案例"]      # env 假 critic 产物
+
+    wf.revise_step(run["run_id"], critic["index"])
+    r = wf.load_run(run["run_id"])
+    critic = _step(r, "critic")
+    assert critic["status"] == wf.ST_AWAITING                 # 重写不代替审批
+    art = critic["artifact"]
+    assert art["payload"] == "修订正文" and art["title"] == "修订标题"
+    assert art["verdict"] == "accept" and art["must_fix"] == []
+    assert len(art["revisions"]) == 1
+    assert art["revisions"][0]["verdict"] == "revise"          # 归档的是重写前评分
+    assert art["revisions"][0]["must_fix"] == ["补个案例"]
+    assert "补个案例" in calls["instruction"]                   # must_fix 进了重写指令
+    assert calls["rescored"] == "修订正文"                      # 重评的是新稿
+    assert any("重写" in m["message"] for m in r["history"])
+
+    # 再重写一轮：模拟"新稿仍不满意"（人工补必改点后再点），轮次累加
+    art["must_fix"] = ["再加个数据"]
+    wf.save_run(r)
+    wf.revise_step(run["run_id"], critic["index"])
+    art = _step(wf.load_run(run["run_id"]), "critic")["artifact"]
+    assert len(art["revisions"]) == 2
+    assert art["revisions"][1]["round"] == 1
+
+
+def test_revise_step_guards(env, monkeypatch):
+    """revise_step 防呆：非评分步骤 / 评分卡无必改点时拒绝，不烧 LLM 额度。"""
+    def _boom(*a, **k):
+        raise AssertionError("防呆场景不应触发 LLM 调用")
+    monkeypatch.setattr(wf.content_pipeline, "run_writer_draft", _boom)
+    _write_config(env, {})
+    run = wf.create_run(wf.DEFAULT_WORKFLOW_ID, topic="选题G")
+    wf.advance(run["run_id"])
+    r = wf.load_run(run["run_id"])
+    with pytest.raises(ValueError, match="不是评分步骤"):
+        wf.revise_step(run["run_id"], _step(r, "research")["index"])   # research 审批口
+
+    # critic 审批口但评分卡没有必改点（verdict=accept）→ 也拒绝
+    monkeypatch.setitem(wf.step_id_handlers, "critic",
+                        lambda ctx: {"kind": "critic", "verdict": "accept", "scores": {},
+                                     "must_fix": [], "payload": "正文T", "preview": "{}"})
+    for sid in ("research", "write"):
+        r = wf.load_run(run["run_id"])
+        wf.approve_step(run["run_id"], _step(r, sid)["index"])
+    r = wf.load_run(run["run_id"])
+    assert _step(r, "critic")["status"] == wf.ST_AWAITING
+    with pytest.raises(ValueError, match="没有必改点"):
+        wf.revise_step(run["run_id"], _step(r, "critic")["index"])
 
 
 def test_skip_failed_step_continues_to_next(env, monkeypatch):
