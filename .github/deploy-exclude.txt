@@ -24,6 +24,11 @@ autopublish_artifacts/
 autopublish_sources/
 wechat_drafts/
 task_drafts/
+# 头条草稿运行时目录（不是代码，名字看着像兄弟项目纯属历史默认值巧合）：
+# 容器内 OPC_ROOT_DIR=/app，publishers.get_toutiao_drafts_dir() 未配置时默认写进
+# /app/toutiao-agent/drafts = 部署目录内，容器（root）生成、rsync 用户无权删也不该删
+# （2026-09-30 部署因 unlink 它 Permission denied 导致 deploy 中断）。
+toutiao-agent/
 agents/*/lessons.md
 agents/*/reviews/
 agents/*/rag_chunks.json
